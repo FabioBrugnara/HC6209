@@ -8,26 +8,16 @@ Author: Fabio Brugnara
 """
 
 
-### IMPORT SCIENTIFIC LIBRARIES ###
-# standard libraries
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+### IMPORT LIBRARIES ###
 import time
-from tqdm import tqdm
-
-# sparse library
-from scipy import sparse
-
-# Gaussian filter for G2t plotting
-from scipy.ndimage import gaussian_filter, gaussian_filter1d
-
-# fast matrix multiplication and other (mkl and numexpr)
-from sparse_dot_mkl import dot_product_mkl, gram_matrix_mkl
-import numexpr as ne
-
-# C-implemented functions
-from XPCScy_tools.XPCScy_tools import mean_trace_float64
+import numpy as np
+import matplotlib.pyplot as plt
+from tqdm import tqdm                                        # for progress bar
+from scipy import sparse                                     # for sparse array in scipy
+from scipy.ndimage import gaussian_filter, gaussian_filter1d # for Gaussian filtering in G2t plotting
+from sparse_dot_mkl import dot_product_mkl, gram_matrix_mkl  # for fast (dense and sparse) matrix multiplication
+import numexpr as ne                                         # for parallelized numpy operations
+from XPCScy_tools.XPCScy_tools import mean_trace_float64     # for C-implemented functions
 
 
 ### VARIABLES ###
@@ -52,12 +42,10 @@ def set_beamline(beamline_toset:str):
         import PETRA3_tools as PETRA
         beamline = 'PETRA3'
         Nx, Ny, Npx, lxp, lyp = PETRA.Nx, PETRA.Ny, PETRA.Npx, PETRA.lxp, PETRA.lyp
-    
     elif beamline_toset == 'ID10':
         import ID10_tools as ID10
         beamline = 'ID10'
         Nx, Ny, Npx, lxp, lyp = ID10.Nx, ID10.Ny, ID10.Npx, ID10.lxp, ID10.lyp
-        
     else:
         raise ValueError('Beamline not recognized!')
     
@@ -68,11 +56,11 @@ def set_expvar(X0_toset:int, Y0_toset:int, L_toset:float):
 
     Parameters
     ----------
-        X0: int
+        X0_toset: int
             X0 position of the beam center in pixels
-        Y0: int
+        Y0_toset: int
             Y0 position of the beam center in pixels
-        L: float
+        L_toset: float
             Distance from the sample to the detector in meters
     '''
     global X0, Y0, L
@@ -83,19 +71,92 @@ def set_expvar(X0_toset:int, Y0_toset:int, L_toset:float):
 ############################################
 
 def E2lambda(E):
+    '''
+    Convert X-ray energy in keV to wavelength in Angstroms.
+    
+    Parameters
+    ----------
+        E: float
+            X-ray energy in keV
+    Returns
+    -------
+    float
+        Wavelength in Angstroms
+    '''
     return 12.39842/E
 
 def lambda2E(l):
+    '''
+    Convert X-ray wavelength in Angstroms to energy in keV.
+
+    Parameters
+    ----------
+        l: float
+            Wavelength in Angstroms
+    Returns
+    -------
+    float
+        X-ray energy in keV
+    '''
     return 12.39842/l
 
 def theta2Q(Ei, theta):
+    '''
+    Convert the scattering angle in degrees to Q in 1/A.
+
+    Parameters
+    ----------
+        Ei: float
+            Energy of the beam in keV
+        theta: float
+            Scattering angle in degrees
+    Returns
+    -------
+    float
+        Q value in 1/A
+    '''
     return 4*np.pi*np.sin(np.deg2rad(theta)/2)/E2lambda(Ei)
 
 def Q2theta(Ei, Q):
+    '''
+    Convert Q in 1/A to the scattering angle in degrees.
+
+    Parameters
+    ----------
+        Ei: float
+            Energy of the beam in keV
+        Q: float
+            Q value in 1/A
+    Returns
+    -------   
+    float
+        Scattering angle in degrees
+    '''
     return 2*np.rad2deg(np.arcsin(E2lambda(Ei)*Q/4/np.pi))
 
 
-decorelation_f = lambda t, tau, beta, c, y0: c*np.exp(-(t/tau)**beta) + y0
+def decorrelation_f(t, tau, beta, c, y0):
+    '''
+    Decorrelation function for XPCS analysis.
+
+    Parameters
+    ----------
+        t : array_like
+            Time variable.
+        tau : float
+            Characteristic decay time.
+        beta : float
+            Stretching exponent.
+        c : float
+            Contrast or amplitude.
+        y0 : float
+            Baseline offset.
+    Returns
+    -------
+    array_like
+        Decorrelation function evaluated at t.
+    '''
+    return c * np.exp(-(t / tau) ** beta) + y0
 
 #########################################################################################################################
 
@@ -104,7 +165,7 @@ decorelation_f = lambda t, tau, beta, c, y0: c*np.exp(-(t/tau)**beta) + y0
 ########### MASK PLOTS ##########
 #################################
 
-def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=None, mask=None, mask_geom=None, Nfi=None, Nff=None, max_plots=False, wide_plots = False):
+def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=None, mask=None, load_mask=None, mask_geom=None, Nfi=None, Nff=None, max_plots=False, wide_plots = False):
     '''
     Function that generates a number of different plots to create the mask! By default it generates the average flux per pixel map and histogram.
     
@@ -121,11 +182,10 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
         Imaxth_high: float
             Maximum number of counts per pixel treshold [ph/px]
         mask: np.array
-            Mask of the e4m detector lines (slightly wider than the overflow lines, as pixels on the adges are not reliable)
-        Qmask: np.array
-            Q mask of the e4m detector
+            If e4m_data.shape[1]==Npx, is the mask to apply to the data for plotting and histogram generation.\n
+            If e4m_data.shape[1]!=Npx, mask is assumed is the same used to load the data, thus mask.sum()==e4m_data.shape[1]. In this case mask is used to plot the correct X-Y profile.
         mask_geom: list of dicts
-            List of geometries to mask.
+            List of geometries to mask. The function just plot the geometries on top of the XY profile.
         Nfi: int
             First frame to consider
         Nff: int
@@ -135,6 +195,14 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
         wide_plots: bool
             If True, plot the wide histogram of the mean flux per pixel and maximum counts per pixel (if max_plots is True).
     '''
+
+    # CHECK e4m_data AND load_mask DIMENSION
+    if (e4m_data.shape[1] != Npx) and (load_mask is None):     raise ValueError('Cannot generate plots from already masked data! Please provide the load_mask!')
+    if (load_mask is not None) and (mask is not None):         raise ValueError('Cannot apply mask to masked loaded data!')
+    if (e4m_data.shape[1] == Npx) and (load_mask is not None): raise ValueError('Cannot use load_mask with already masked data!')
+    if load_mask is not None:
+        if (e4m_data.shape[1] != load_mask.sum()):             raise ValueError('The load_mask does not match the e4m_data.shape[1]! Please check the mask dimensions!')
+    
     
     # LOAD DATA in Nfi:Nff
     e4m_data = e4m_data[Nfi:Nff]
@@ -144,8 +212,8 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
 
     # COMPUTE THE MEAN FLUX PER PX [ph/s/px]
     I_mean = np.ones(Npx)*of_value4plot
-    if e4m_data.shape[1] == Npx: I_mean[mask] = e4m_data[:,mask].sum(axis=0)/(itime*e4m_data.shape[0])
-    else:                        I_mean[mask] = e4m_data.sum(axis=0)        /(itime*e4m_data.shape[0])
+    if load_mask is None: I_mean[mask]      = e4m_data[:,mask].sum(axis=0)/(itime*e4m_data.shape[0])
+    else:                 I_mean[load_mask] = e4m_data.sum(axis=0)        /(itime*e4m_data.shape[0])
 
     # COMPUTE THE MAXIMUM COUNTS PER PX [ph/px] (only if needed)
     if (Imaxth_high is not None) or max_plots:
@@ -161,65 +229,50 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
     if Imaxth_high is not None: print('# of pixels above Imaxth_high treshold -> ', I_max[mask][I_max[mask]>Imaxth_high].shape[0], 'pixels (of', I_max.shape[0], '=>', round(I_max[mask][I_max[mask]>Imaxth_high].shape[0]/I_max[mask].shape[0]*100, 2), '%)')
     print('################################################################################\n')
 
-
-    ########## MEAN FLUX PER PX FIGURE #########################################################################
+    # MEAN FLUX PER PX FIGURE
     plt.figure(figsize=(8,13))
     ax4 = plt.subplot(211)
-    ax5 = plt.subplot(413)
-
-    # MEAN FLUX PER PX IMAGE
-    im = ax4.imshow(I_mean.reshape(Nx, Ny), vmin=Ith_low, vmax=Ith_high, origin='lower')
-
-    # add the colorbar and labels
-    plt.colorbar(im, ax=ax4)
-    ax4.set_title('Mean flux per px [ph/s/px]')
+    im = ax4.imshow(I_mean.reshape(Nx, Ny), vmin=Ith_low, vmax=Ith_high, origin='lower')                                                                    # plot the mean flux per px 
+    plt.colorbar(im, ax=ax4)                                                                                                                                # add colorbar, labels, ...  
+    ax4.set_title('Mean flux per px [ph/s/px]')                                                                                             
     ax4.set_xlabel('Y [px]')
     ax4.set_ylabel('X [px]')
-
-    # plot the beam center
-    ax4.plot(Y0, X0, 'ro', markersize=10)
-
-    # plot the mask geometry (mask_geom)
-    if mask_geom is not None:
-        for obj in mask_geom:
+    ax4.plot(Y0, X0, 'ro', markersize=10)                                                                                                                   # plot the beam center
+    if mask_geom is not None:                                                                                                                               # plot the mask geometry (mask_geom)
+        for obj in mask_geom:                                                                                                                               # loop over the objects ...  
             if obj['geom'] == 'Circle':
                 ax4.add_artist(plt.Circle((obj['Cy'], obj['Cx']), obj['r'], color='r', fill=False))
             elif obj['geom'] == 'Rectangle':
                 ax4.add_artist(plt.Rectangle((obj['y0'], obj['x0']), obj['yl'], obj['xl'], color='r', fill=False))
 
     # MEAN FLUX PER PX HISTOGRAM (ZOOM)
-    if (Ith_high is not None) and (Ith_low is not None): ax5.hist(I_mean[mask], bins=200, range=(Ith_low*.5, Ith_high*1.5),       label='(zoom)')
-    elif (Ith_high is not None) and (Ith_low is None):   ax5.hist(I_mean[mask], bins=200, range=(0, Ith_high*1.5),                label='(zoom)')
-    elif (Ith_high is None) and (Ith_low is not None):   ax5.hist(I_mean[mask], bins=200, range=(Ith_low*.5, I_mean[mask].max()), label='(zoom)')
-    else:                                                ax5.hist(I_mean[mask], bins=200,                                         label='(full range)')
-
-    # plot the Ith_high and Ith_low limits
-    if Ith_high is not None: ax5.axvline(Ith_high, color='r', label='Ith_high')
-    if Ith_low is not None:  ax5.axvline(Ith_low,  color='g', label='Ith_low')
-
-    # add the labels and legend
-    ax5.set_yscale('log')
-    ax5.set_xlabel('Mean flux per px [ph/s/px]')
-    ax5.legend()
+    ax5 = plt.subplot(413)                                                                                                                                  # create the subplot
+    if (Ith_high is not None) and (Ith_low is not None): ax5.hist(I_mean[mask], bins=200, range=(Ith_low*.5, Ith_high*1.5),       label='(zoom)')           # plot the histogram
+    elif (Ith_high is not None) and (Ith_low is None):   ax5.hist(I_mean[mask], bins=200, range=(0, Ith_high*1.5),                label='(zoom)')           # ..
+    elif (Ith_high is None) and (Ith_low is not None):   ax5.hist(I_mean[mask], bins=200, range=(Ith_low*.5, I_mean[mask].max()), label='(zoom)')           # ..
+    else:                                                ax5.hist(I_mean[mask], bins=200,                                         label='(full range)')     # ..
+    if Ith_high is not None: ax5.axvline(Ith_high, color='r', label='Ith_high')                                                                             # plot the Ith_high limit
+    if Ith_low is not None:  ax5.axvline(Ith_low,  color='g', label='Ith_low')                                                                              # plot the Ith_low limit
+    ax5.set_yscale('log')                                                                                                                                   # add the labels and legend
+    ax5.set_xlabel('Mean flux per px [ph/s/px]')                                                                                                            # ..   
+    ax5.legend()                                                                                                                                            # ..        
 
     # MEAN FLUX PER PX HISTOGRAM (FULL RANGE)
     if wide_plots:
-        ax6 = plt.subplot(414)
-        ax6.hist(I_mean[mask], bins=200, label='(full range)')
+        ax6 = plt.subplot(414)                                                                                                                              # create the subplot
+        ax6.hist(I_mean[mask], bins=200, label='(full range)')                                                                                              # plot the histogram    
         if Ith_high is not None: ax6.axvline(Ith_high, color='r', label='Ith_high')
         if Ith_low  is not None: ax6.axvline(Ith_low,  color='g', label='Ith_low')
         ax6.set_yscale('log')
         ax6.set_xlabel('Mean flux per px[ph/s/px]')
         ax6.legend()
 
-    plt.tight_layout()
-    plt.show()
+    plt.tight_layout(); plt.show()
 
-    ########## MAXIMUM COUNTS PER PX FIGURE #########################################################################
+    # MAXIMUM COUNTS PER PX FIGURE
     if max_plots:
         plt.figure(figsize=(8,13))
         ax4 = plt.subplot(211)
-        ax5 = plt.subplot(413)
 
         # MAX COUNTS PER PX IMAGE
         im = ax4.imshow(I_max.reshape(Nx, Ny), vmin=0, vmax=Imaxth_high, origin='lower')
@@ -229,6 +282,7 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
         ax4.set_ylabel('X [px]')
 
         # MAX COUNTS PER PX HISTOGRAM (ZOOM)
+        ax5 = plt.subplot(413)
         if Imaxth_high is not None: 
             ax5.hist(I_max[mask], bins=100, label='(zoom)', range=(0, Imaxth_high*1.5))
             ax5.axvline(Imaxth_high, color='r', label='Imaxth_high')
@@ -256,7 +310,7 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
 ########### MASK GEN ############
 #################################
 
-def gen_mask(e4m_data=None, itime=None, OF=None, e4m_mask=None, Qmask=None, mask_geom=None, Ith_high=None, Ith_low=None, Imaxth_high=None, Nfi=None, Nff=None, hist_plots=False):
+def gen_mask(e4m_data=None, itime=None, mask=None, mask_geom=None, Ith_high=None, Ith_low=None, Imaxth_high=None, Nfi=None, Nff=None, hist_plots=False):
     '''
     Generate a mask for the e4m detector from various options. The function plot the so-obtained mask, and also return some histograms to look at the results (if hist_plots is True).
 
@@ -266,19 +320,14 @@ def gen_mask(e4m_data=None, itime=None, OF=None, e4m_mask=None, Qmask=None, mask
         Sparse matrix of the e4m detector data
     itime: float
         Integration time of the e4m detector
-    OF: np.array
-        Overflow mask of the e4m detector
-    e4m_mask: np.array
+    mask: np.array
         Mask of the e4m detector lines (slightly wider than the overflow lines, as pixels on the adges are not reliable)
-    Qmask: np.array
-        Q mask of the e4m detector
     mask_geom: list of dicts
-        List of geometries to mask (in dictionary form). The supported objects are:
-        - Circle: {'geom': 'Circle', 'Cx': x0, 'Cy': y0, 'r': r, 'inside': True/False}
-        - Rectangle: {'geom': 'Rectangle', 'x0': x0, 'y0': y0, 'xl': xl, 'yl': yl, 'inside': True/False}
-
-            Example:
-            mask_geom = [   {'geom': 'Circle', 'Cx': 100, 'Cy': 100, 'r': 10, 'inside': True}, {'geom': 'Rectangle', 'x0': 50, 'y0': 50, 'xl': 20, 'yl': 10, 'inside': False}]
+        List of geometries to mask (in dictionary form). The supported objects are:\n
+        - Circle: {'geom': 'Circle', 'Cx': x0, 'Cy': y0, 'r': r, 'inside': True/False}\n
+        - Rectangle: {'geom': 'Rectangle', 'x0': x0, 'y0': y0, 'xl': xl, 'yl': yl, 'inside': True/False}\n
+        Example:\n
+        mask_geom = [   {'geom': 'Circle', 'Cx': 100, 'Cy': 100, 'r': 10, 'inside': True}, {'geom': 'Rectangle', 'x0': 50, 'y0': 50, 'xl': 20, 'yl': 10, 'inside': False}]
     Ith_high: float
         Threshold (above) for the mean photon flux of the pixels
     Ith_low: float
@@ -294,27 +343,19 @@ def gen_mask(e4m_data=None, itime=None, OF=None, e4m_mask=None, Qmask=None, mask
 
     Returns
     -------
-    mask: np.array
+    np.array
         Mask of the e4m detector
     '''
 
-    # CHEK DATA DIMENSION
+    # CHECK e4m_data DIMENSION & LOAD DATA in Nfi:Nff
     if e4m_data is not None: 
         if e4m_data.shape[1] != Npx: raise ValueError('Cannot generate a mask from already masked data!')
-    
-    # LOAD DATA in Nfi:Nff
-    if e4m_data is not None: 
         e4m_data = e4m_data[Nfi:Nff]
 
-    # GENERATE MASK OF ONES
-    mask = np.ones(e4m_data.shape[1], dtype=bool)
-    
-    # FILTER OVERFLOWS, E4M_MASK AND QMASK
-    if OF is not None:       mask = ~OF * mask
-    if e4m_mask is not None: mask = mask * e4m_mask
-    if Qmask is not None:    mask = mask * Qmask
+    # GENERATE MASK OF ONES (if mask is None)
+    if mask is None: mask = np.ones(Npx, dtype=bool)
 
-    # APPLAY GEOMETRIC MASKS
+    # APPLAY GEOMETRIC MASKS (if mask_geom is not None)
     if (mask_geom is not None) and (mask_geom!=[]):
         mask = mask.reshape(Nx, Ny)
         X, Y = np.mgrid[:Nx, :Ny]
@@ -331,15 +372,14 @@ def gen_mask(e4m_data=None, itime=None, OF=None, e4m_mask=None, Qmask=None, mask
                     mask = mask * ((Y<obj['y0']) | (Y>obj['y0']+obj['yl']) | (X<obj['x0']) | (X>obj['x0']+obj['xl']))
         mask = mask.flatten()
 
-    # FILTER USING THRESHOLDS
-    if ((Ith_high is not None) or (Ith_low is not None)):
+    # FILTER USING THRESHOLDS (Ith_high, Ith_low, Imaxth_high) & AND COMPUTING I_mean, I_max (if needed)
+    if (Ith_high is not None) or (Ith_low is not None) or (hist_plots==True):
         I_mean = e4m_data.sum(axis=0)/(itime*e4m_data.shape[0])
         if Ith_high is not None: mask = mask * (I_mean<=Ith_high)
         if Ith_low is not None : mask = mask * (I_mean>=Ith_low)
-    if Imaxth_high!=None:
-        if issparse: I_max = e4m_data.max(axis=0).toarray()
-        else       : I_max = e4m_data.max(axis=0)
-        mask = mask * (I_max<Imaxth_high)
+    if (Imaxth_high!=None) or (hist_plots==True):
+        I_max = np.array(e4m_data.max(axis=0))
+        if Imaxth_high is not None : mask = mask * (I_max<=Imaxth_high)
 
     # PRINT PERCENTAGE OF MASKED PIXELS
     print('#################################################')
@@ -361,22 +401,17 @@ def gen_mask(e4m_data=None, itime=None, OF=None, e4m_mask=None, Qmask=None, mask
         ax2 = plt.subplot(212)
 
         # Masked histogram of px flux
-        if ((Ith_high is None) and (Ith_low is None)): I_mean = e4m_data.sum(axis=0)/(itime*e4m_data.shape[0])
         ax1.set_title('Masked histogram of px flux')
         ax1.hist(I_mean[mask], bins=100)
         ax1.set_yscale('log')
         ax1.set_xlabel('Mean flux per px')
 
         # Maked histogram of max counts per px
-        if Imaxth_high==None:
-            if issparse: I_max = e4m_data.max(axis=0).toarray()
-            else       : I_max = e4m_data.max(axis=0)
         ax2.set_title('Masked histogram of max counts per px')
         ax2.hist(I_max[mask].data, bins=30, label='no zero counts')
+        ax2.legend()
         ax2.set_yscale('log')
         ax2.set_xlabel('Max counts per px')
-        ax2.legend()
-
         plt.tight_layout()
         plt.show()
 
@@ -406,14 +441,14 @@ def gen_Qmask(Ei, theta, Q, dq, Qmap_plot=False):
 
     Returns
     -------
-    Qmask: np.array or dict of np.array
+    np.array or dict of np.array
         Q mask(s) of the e4m detector
     '''
 
     # GET THE X-Y MAPS
     X, Y = np.mgrid[:Nx, :Ny]
 
-    # COMPUTE THE THETA MAP FOR THE GIVEN DETECTOR POSITION AND ENERGY
+    # COMPUTE THE Q MAP FOR THE GIVEN DETECTOR DISTANCE, DETECTOR POSITION, AND X-RAY ENERGY
     if beamline=='ID10':
         dY0 = L*np.tan(np.deg2rad(theta))
         dY0_map =np.sqrt(((X-X0)*lxp)**2+(dY0-(Y-Y0)*lyp)**2)
@@ -422,33 +457,22 @@ def gen_Qmask(Ei, theta, Q, dq, Qmap_plot=False):
         dX0 = L*np.tan(np.deg2rad(theta))
         dX0_map =np.sqrt(((dX0-(X-X0)*lxp))**2+((Y-Y0)*lyp)**2)
         theta_map = np.arctan(dX0_map/L)
-
-    # GET THE Q MAP
     Q_map = theta2Q(Ei, np.rad2deg(theta_map))
 
     # GET THE Q REGION
-    # case of a single Q value
-    if (type(Q) == float) or (type(Q) == int) or (type(Q) == np.float64) or (type(Q) == np.float32):
-        Qmask = (np.abs(Q_map-Q)<dq).flatten()
-    # case of a list of Q values
+    if (type(Q) == float) or (type(Q) == int):           Qmask       = (np.abs(Q_map-Q)<dq      ).flatten() # case of a single Q value
     else:
         Qmask = {}
         for i in range(len(Q)):
-            if (type(dq) == float) or (type(dq) == int) or (type(dq) == np.float64) or (type(dq) == np.float32):
-                Qmask[Q[i]] = (np.abs(Q_map-Q[i])<dq).flatten()
-            else:
-                Qmask[Q[i]] = (np.abs(Q_map-Q[i])<dq[i]).flatten()
+            if (type(dq) == float) or (type(dq) == int): Qmask[Q[i]] = (np.abs(Q_map-Q[i])<dq   ).flatten() # case of a list of Q values, single dq value
+            else:                                        Qmask[Q[i]] = (np.abs(Q_map-Q[i])<dq[i]).flatten() # case of a list of Q values, list of dq values
     
-    ########## QMASK IMAGE #########################################################################
-    plt.figure(figsize=(8,8))
-
-    # PLOT THE Q MASK
-    # case of a single Q value
-    if (type(Q) == float) or (type(Q) == int) or (type(Q) == np.float64) or (type(Q) == np.float32):    
+    # QMASK PLOT
+    plt.figure(figsize=(8,8))                                          
+    if (type(Q) == float) or (type(Q) == int):                                                              # case of a single Q value
         plt.imshow(Qmask.reshape((Nx, Ny)), cmap='viridis', origin='lower', vmin=0, vmax=1, alpha=1)
         plt.scatter([],[], color=plt.cm.viridis(1.), label=str(Q)+'$\\AA^{-1}$')
-    # case of a list of Q values
-    else:
+    else:                                                                                                   # case of a list of Q values
         Qmask2plot = 0
         s = 1/len(Q)
         for i, q in enumerate(Qmask.keys()):
@@ -456,29 +480,17 @@ def gen_Qmask(Ei, theta, Q, dq, Qmap_plot=False):
             plt.scatter([],[], color=plt.cm.viridis(s*(i+1)), label=str(Q[i])+'$\\AA^{-1}$')
         plt.imshow(Qmask2plot, cmap='viridis', origin='lower', vmin=0, vmax=1, alpha=1)
 
-    # add labels and legend
-    plt.xlabel('Y [px]')
-    plt.ylabel('X [px]')
-    plt.legend()
+    plt.xlabel('Y [px]'); plt.ylabel('X [px]'); plt.legend()
+    plt.tight_layout(); plt.show()
 
-    plt.tight_layout()
-    plt.show()
-
-
-    ########## QMAP IMAGE (if Qmap_plot=True) #########################################################################
+    # QMAP PLOT (if Qmap_plot=True)
     if Qmap_plot:
         plt.figure(figsize=(8,8))
         plt.imshow(Q_map, cmap='viridis', origin='lower')
-        plt.colorbar()
-        plt.xlabel('Y [px]')
-        plt.ylabel('X [px]')
-        plt.title('Q [$\\AA^{-1}$]')
-
-        plt.tight_layout()
-        plt.show()
+        plt.colorbar(); plt.xlabel('Y [px]'); plt.ylabel('X [px]'); plt.title('Q [$\\AA^{-1}$]')
+        plt.tight_layout(); plt.show()
 
     return Qmask
-
 
 
 ############################
@@ -508,100 +520,33 @@ def get_It(e4m_data, itime, mask=None, Nfi=None, Nff=None, Lbin=None, Nstep=None
 
     Returns
     -------
-    t_Idt: np.array
+    t_It: np.array
         Time array for the It vector
     It: np.array
         It vector
     '''
-
-    # CREATE EMPTY MASK IF mask=None
-    if mask is None: mask = np.ones(e4m_data.shape[1], dtype=bool)
-
-    # DEFAULT VALUES FOR Nfi, Nff, Lbin and Nstep
+    # DEFAULT VALUES
     if Nfi is None: Nfi = 0
     if Nff is None: Nff = e4m_data.shape[0]
     if Lbin is None: Lbin = 1
     if Nstep is None: Nstep = 1
-
-    # GET THE CORRECT INDEXES FROM Nfi, Nff, Lbin and Nstep
-    idx = [i for i in range(Nff-Nfi) if i % Nstep < Lbin][:((Nff-Nfi)//Nstep-1)*Nstep]
-    idx = Nfi + np.array(idx)
+    if mask is None: mask = np.ones(e4m_data.shape[1], dtype=bool) 
     
     # COMPUTE It (masked)
-    It = e4m_data[idx][:,mask].sum(axis=1)/mask.sum()
+    idx = Nfi + np.array([i for i in range(Nff-Nfi) if i % Nstep < Lbin][:((Nff-Nfi)//Nstep-1)*Nstep]) # GET THE CORRECT INDEXES FROM Nfi, Nff, Lbin and Nstep
+    It = e4m_data[idx][:,mask].sum(axis=1)/mask.sum()                                                  # Compute It
+    if Lbin != 1: It = It[:(It.size//Lbin)*Lbin].reshape(-1, Lbin).sum(axis=1) / Lbin                  # BIN It (if Lbin > 1)
+    It /= itime                                                                                        # NORMALIZE It
+    t_It = np.linspace(Nfi*itime, Nff*itime, It.shape[0])                                              # BUILD THE TIME VECTOR    
 
-    # BIN It (if Lbin > 1)
-    if Lbin != 1: 
-        It = It[:(It.size//Lbin)*Lbin].reshape(-1, Lbin).sum(axis=1) / Lbin
-    
-    # NORMALIZE It
-    It /= itime
-
-    # GET THE TIME VECTOR    
-    t_Idt = np.linspace(Nfi*itime, Nff*itime, It.shape[0])
-
-    return t_Idt, It
-
-
-##################################
-######### BIN e4m_data ###########
-##################################
-
-def bin_e4m_data(e4m_data, Lbin, Nfi=None, Nff=None):
-    '''
-    Bin the e4m_data using the Lbin factor. The function also print some information about the memory usage and the sparsity of the data.
-
-    Parameters
-    ----------
-    e4m_data: sparse.csr_matrix
-        Sparse matrix of the e4m detector data
-    Lbin: int
-        Binning factor for the frames
-    Nfi: int
-        First frame to consider
-    Nff: int
-        Last frame to consider
-    
-    Returns
-    -------
-    Itp: sparse.csr_matrix or np.array (depending on the input data type)
-        Binned e4m_data
-    '''
-
-    if Nfi == None: Nfi = 0
-    if Nff == None: Nff = e4m_data.shape[0]
-    if Lbin == None: Lbin = 1
-
-    #  LOAD DATA
-    t0 = time.time()
-    print('Loading frames ...')
-    if (Nfi!=0) or (Nff!=e4m_data.shape[0]): Itp = e4m_data[Nfi:Nff]
-    else : Itp = e4m_data
-    if Itp.dtype != np.float32: Itp = Itp.astype(np.float32) # convert to float32
-    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    # BIN DATA
-    t0 = time.time()
-    print('Binning frames (Lbin = '+str(Lbin)+', using MKL library) ...')
-    Itp = (Itp[:Itp.shape[0]//Lbin*Lbin]) # throw the last frames 
-    BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//Lbin, np.arange(Itp.shape[0]))), dtype=np.float32)
-    Itp = dot_product_mkl(BIN_matrix, Itp)
-    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-    print('\t | '+str(Itp.shape[0])+' frames X '+str(Itp.shape[1])+' pixels')
-    if isinstance(Itp, sparse.sparray):
-        print('\t | sparsity = {:.2e}'.format(Itp.data.size/(Itp.shape[0]*Itp.shape[1])))
-        print('\t | memory usage (sparse.csr_array @ '+str(Itp.dtype)+') =', round((Itp.data.nbytes+Itp.indices.nbytes+Itp.indptr.nbytes)/1024**3,3), 'GB')
-    else:
-        print('\t | memory usage (np.array @ '+str(Itp.dtype)+') =', round(Itp.nbytes/1024**3,3), 'GB')
-
-    return Itp
+    return t_It, It
 
 
 #################################
 ######### COMUPTE G2t ###########
 #################################
 
-def get_G2t(e4m_data, mask=None, Nfi=None, Nff=None, Lbin=None, MKL_library=True, NumExpr_library=True):
+def get_G2t(e4m_data, mask=None, Nfi=None, Nff=None, Lbin=None):
     '''
     Compute the G2t matrix from the e4m, properly masked with the matrix mask.
 
@@ -699,7 +644,7 @@ def get_G2t(e4m_data, mask=None, Nfi=None, Nff=None, Lbin=None, MKL_library=True
 ######### COMUPTE G2t bunnched ###########
 ##########################################
 
-def get_G2t_bybunch(e4m_data, Nbunch, mask=None, Nfi=None, Nff=None, Lbin=None, MKL_library=True, NumExpr_library=True):
+def get_G2t_bybunch(e4m_data, Nbunch, mask=None, Nfi=None, Nff=None, Lbin=None):
     '''
     Compute the G2t matrix from the e4m, bunching the frames in Nbunch bunches, thus averaging the G2t matrix over the bunches. 
 
@@ -717,10 +662,6 @@ def get_G2t_bybunch(e4m_data, Nbunch, mask=None, Nfi=None, Nff=None, Lbin=None, 
         Last frame to consider
     Lbin: int
         Binning factor for the frames
-    MKL_library: boolean
-        If True, use the MKL library for the matrix multiplication
-    NumExpr_library: boolean
-        If True, use the NumExpr library for the normalization
 
     Returns
     -------
@@ -742,7 +683,7 @@ def get_G2t_bybunch(e4m_data, Nbunch, mask=None, Nfi=None, Nff=None, Lbin=None, 
     # COMPUTE G2t FOR EACH BUNCH
     for i in range(Nbunch):
         print('Computing G2t for bunch', i+1, '(Nfi =', Nfi+i*Lbunch, ', Nff =', Nfi+(i+1)*Lbunch, ') ...')
-        G2t += get_G2t(e4m_data, mask, Nfi=Nfi+i*Lbunch, Nff=Nfi+(i+1)*Lbunch, Lbin=Lbin, MKL_library=MKL_library, NumExpr_library=NumExpr_library)
+        G2t += get_G2t(e4m_data, mask, Nfi=Nfi+i*Lbunch, Nff=Nfi+(i+1)*Lbunch, Lbin=Lbin)
         print('Done!\n')
 
     return G2t/Nbunch
@@ -753,7 +694,7 @@ def get_G2t_bybunch(e4m_data, Nbunch, mask=None, Nfi=None, Nff=None, Lbin=None, 
 ######### GET g2 #############
 ##############################
 
-def get_g2(dt, G2t, cython=True):
+def get_g2(dt, G2t, cython=False):
     '''
     Compute the g2 from the G2t matrix.
 
@@ -829,6 +770,7 @@ def get_g2_mt(dt, g2):
     Alias for backwords compatibility of XPCS.get_g2mt_fromling2 .
     Compute the multitau g2 from the g2 array.
     '''
+    print('WARNING: get_g2_mt is deprecated. Use get_g2mt_fromling2 instead.')
     return get_g2mt_fromling2(dt, g2)
 
 
@@ -836,48 +778,49 @@ def get_g2_mt(dt, g2):
 ##### PLOT X/Y PROFILE ####
 ###########################
 
-def plot_XYprofile(e4m_data, itime, ax='Y', mask=None, Nfi=None, Nff=None):
-    '''
-    Plot the X or Y profiles of the e4m detector.
+# def plot_XYprofile(e4m_data, itime, ax='Y', mask=None, Nfi=None, Nff=None):
+#     '''
+#     Plot the X or Y profiles of the e4m detector.
 
-    Parameters
-    ----------
-    e4m_data: sparse.csc_matrix
-        Sparse matrix of the e4m detector data
-    itime: float
-        Integration time of the e4m detector
-    ax: str
-        Axis to plot ('X' or 'Y')
-    mask: np.array
-        Mask of the e4m detector
-    Nfi: int
-        First frame to consider
-    Nff: int
-        Last frame to consider
-    '''
+#     Parameters
+#     ----------
+#     e4m_data: sparse.csc_matrix
+#         Sparse matrix of the e4m detector data
+#     itime: float
+#         Integration time of the e4m detector
+#     ax: str
+#         Axis to plot ('X' or 'Y')
+#     mask: np.array
+#         Mask of the e4m detector
+#     Nfi: int
+#         First frame to consider
+#     Nff: int
+#         Last frame to consider
+#     '''
 
-    # DEFAULT VALUES FOR Nfi, Nff
-    if Nfi == None: Nfi = 0
-    if Nff == None: Nff = e4m_data.shape[0]
+#     # DEFAULT VALUES FOR Nfi, Nff
+#     if Nfi == None: Nfi = 0
+#     if Nff == None: Nff = e4m_data.shape[0]
 
-    # COMPUTE It
-    It = (e4m_data[Nfi:Nff].sum(axis=0)/((Nff-Nfi)*itime)).reshape(Nx, Ny)
+#     # COMPUTE It
+#     It = (e4m_data[Nfi:Nff].sum(axis=0)/((Nff-Nfi)*itime)).reshape(Nx, Ny)
 
-    # APPLY MASK
-    if mask is not None: It[~mask.reshape(Nx, Ny)] = 0
+#     # APPLY MASK
+#     if mask is not None: It[~mask.reshape(Nx, Ny)] = 0
 
-    # PLOT
-    plt.figure(figsize=(8,5))
-    if (ax=='Y') or (ax=='y'):
-        plt.plot(It.sum(axis=0)/mask.reshape(Nx, Ny).sum(axis=0))
-        plt.xlabel('Y [px]')
-    if (ax=='X') or (ax=='x'):
-        plt.plot(It.sum(axis=1)/mask.reshape(Nx, Ny).sum(axis=1))
-        plt.xlabel('X [px]')
-    plt.ylabel('Mean flux per px [ph/s/px]')
+#     # PLOT
+#     plt.figure(figsize=(8,5))
+#     if (ax=='Y') or (ax=='y'):
+#         plt.plot(It.sum(axis=0)/mask.reshape(Nx, Ny).sum(axis=0))
+#         plt.xlabel('Y [px]')
+#     if (ax=='X') or (ax=='x'):
+#         plt.plot(It.sum(axis=1)/mask.reshape(Nx, Ny).sum(axis=1))
+#         plt.xlabel('X [px]')
+#     plt.ylabel('Mean flux per px [ph/s/px]')
     
-    plt.tight_layout()
-    plt.show()
+#     plt.tight_layout()
+#     plt.show()
+
 
 
 
@@ -975,9 +918,10 @@ def plot_G2t(G2t, vmin, vmax, itime=None, t1=None, t2=None, x1=None, x2=None, si
 ##################################################### MULTI-TAU #####################################################
 
 def _get_symG2t(Itp):
+    # Compute G2t upper triangle
     G2t = gram_matrix_mkl(Itp, dense=True, transpose=True)
-           
-    # Normalize G2t
+
+    # Normalize G2t (directly accounting for 0-counts frames)
     It = Itp.sum(axis=1, dtype=np.float32)
     It = np.where(It>0, It, np.sqrt(Itp.shape[1], dtype=np.float32))
     np.divide(np.sqrt(Itp.shape[1]), It, where=It>0, out=It, dtype=np.float32)
@@ -986,6 +930,7 @@ def _get_symG2t(Itp):
     return G2t
 
 def _get_nonsymG2t(Itp1, Itp2):
+    # Compute full G2t
     G2t = dot_product_mkl(Itp1, Itp2.T, dense=True)
            
     # Normalize G2t (directly accounting for 0-counts frames)
@@ -1013,11 +958,13 @@ def _G2t2G2tmt(G2t, G2tmt, type):
     return G2tmt
 
 
-##########################################
-##### GET multitau G2t 4 sparse data #####
-##########################################
+#########################################
+##### GET multitau G2t 4 dense data #####
+#########################################
 
 def get_G2tmt_4dense(e4m_data, dense_depth, mask=None, Nfi=None, Nff=None):
+
+    print('WARNING: the function is still not tested!')
 
     if Nfi == None: Nfi = 0
     if Nff == None: Nff = e4m_data.shape[0]
@@ -1063,8 +1010,14 @@ def get_G2tmt_4dense(e4m_data, dense_depth, mask=None, Nfi=None, Nff=None):
 
     return G2tmt
 
+
+##########################################
+##### GET multitau G2t 4 sparse data #####
+##########################################
+
 def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, Nff=None):
 
+    # DEFAULT VALUES
     if Nfi == None: Nfi = 0
     if Nff == None: Nff = e4m_data.shape[0]
 
@@ -1073,8 +1026,9 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
     print('Loading frames ...')
     if (Nfi!=0) or (Nff!=e4m_data.shape[0]): Itp = e4m_data[Nfi:Nff]
     else : Itp = e4m_data
-    if Itp.dtype != np.float32: Itp = Itp.astype(np.float32) # CONVERT TO float32
-
+    if Itp.dtype != np.float32:
+        Itp = Itp.astype(np.float32) # convert to float32
+        print('Converting to float32 ...')
     print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
     #  MASK DATA
@@ -1083,9 +1037,11 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
         print('Masking data ...')
         Itp = Itp[:,mask]
         print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-        print('\t | '+str(Itp.shape[0])+' frames X '+str(Itp.shape[1])+' pixels')
-        print('\t | sparsity = {:.2e}'.format(Itp.data.size/(Itp.shape[0]*Itp.shape[1])))
-        print('\t | memory usage (sparse.csr_array @ '+str(Itp.dtype)+') =', round((Itp.data.nbytes+Itp.indices.nbytes+Itp.indptr.nbytes)/1024**3,3), 'GB')
+
+    # PRINT DATA INFO
+    print('\t | '+str(Itp.shape[0])+' frames X '+str(Itp.shape[1])+' pixels')
+    print('\t | sparsity = {:.2e}'.format(Itp.data.size/(Itp.shape[0]*Itp.shape[1])))
+    print('\t | memory usage (sparse.csr_array @ '+str(Itp.dtype)+') =', round((Itp.data.nbytes+Itp.indices.nbytes+Itp.indptr.nbytes)/1024**3,3), 'GB')
 
     ### CHECK PARAMS CONDIOTIONS ###
     if sparse_depth >= dense_depth: raise ValueError('sparse_depth must be less/equal than dense_depth!')
@@ -1122,14 +1078,14 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
         BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2**sparse_depth, np.arange(Itp.shape[0]))), dtype=np.float32)
         Itp = dot_product_mkl(BIN_matrix, Itp, dense=True)
 
-        # recurevly compute G2t first diagonal and bin by a factor 2
+        # recursevly compute G2t first diagonal and bin by a factor 2
         for i in tqdm(range(dense_depth-sparse_depth)):
             G2t = (Itp[:-1] * Itp[1:]).sum(axis=1)  # G2t = <Itp*Itp(t-shifted)>p
             norm = np.sqrt(Itp.shape[1])/Itp.sum(axis=1) # standard normalization
             G2t = G2t * norm[1:] * norm[:-1]
             G2tmt.append(np.array(G2t))
 
-            # bin Itp by a factor 2
+            # Vin Itp by a factor 2
             BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2, np.arange(Itp.shape[0]))), dtype=np.float32)
             Itp = dot_product_mkl(BIN_matrix, Itp, cast=True)
 
@@ -1141,10 +1097,10 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
 ##### PLOT multitau G2t #####
 #############################
 
-def plot_G2tmt(G2tmt, itime, vmin, vmax, lower_mt=0, yscale='log2', filter_layer=None, borders=False, xlims=None, vlines=None):
+def plot_G2tmt(G2tmt, itime, vmin, vmax, lower_mt=4, yscale='log2', filter_layer=None, borders=False, xlims=None, vlines=None):
 
     if borders: linewidth = .2
-    else:        linewidth = 0
+    else:       linewidth = 0
 
     plt.figure(figsize=(10,5))
     T = (G2tmt[0].shape[0]+1) * itime
@@ -1168,30 +1124,30 @@ def plot_G2tmt(G2tmt, itime, vmin, vmax, lower_mt=0, yscale='log2', filter_layer
             for vline in vlines:
                 plt.axvline(x=vline, color='red', linestyle='--', linewidth=1)
         
-        if (filter_layer == None) or (b>=filter_layer):
-            BB = plt.broken_barh(xranges, yrange, array=G2tmt[b], cmap='viridis', clim=(vmin, vmax), edgecolor='black', linewidth=linewidth)
-        else:
-            BB = plt.broken_barh(xranges, yrange, array=gaussian_filter1d(G2tmt[b], 2**(filter_layer-b), mode='nearest'), cmap='viridis', clim=(vmin, vmax), edgecolor='black', linewidth=linewidth)
+        if (filter_layer == None) or (b>=filter_layer): BB = plt.broken_barh(xranges, yrange, array=G2tmt[b],                                                         cmap='viridis', clim=(vmin, vmax), edgecolor='black', linewidth=linewidth)
+        else:                                           BB = plt.broken_barh(xranges, yrange, array=gaussian_filter1d(G2tmt[b], 2**(filter_layer-b), mode='nearest'), cmap='viridis', clim=(vmin, vmax), edgecolor='black', linewidth=linewidth)
 
-    plt.xlabel('$t_0$ [s]')
-    if (yscale=='log') or (yscale=='lin'): plt.ylabel('$\\Delta T$ [s]')
-    elif yscale=='log2':                   plt.ylabel('$\\Delta T$ [$\\log_2$]')
-    if xlims==None: plt.xlim(0, T)
-    else:           plt.xlim(xlims)
-    if (yscale=='log') or (yscale=='lin'): plt.ylim(2**lower_mt*itime, 2**len(G2tmt)*itime) # len(G2tmt) is b_max+1!
-    elif yscale=='log2':                   plt.ylim(lower_mt, len(G2tmt))
-    if yscale == 'log':                    plt.yscale('log')
-
-    plt.colorbar(BB)
-    plt.show()
+    plt.xlabel('$t_0$ [s]')                                                                 # x-axis label
+    if xlims==None: plt.xlim(0, T)                                                          # x-axis limits (default)
+    else:           plt.xlim(xlims)                                                         # or user defined
+    if (yscale=='log') or (yscale=='lin'): plt.ylabel('$\\Delta T$ [s]')                    # y-axis label for linear and log scale
+    elif yscale=='log2':                   plt.ylabel('$\\Delta T$ [$\\log_2$]')            # or log2 scale
+    if (yscale=='log') or (yscale=='lin'): plt.ylim(2**lower_mt*itime, 2**len(G2tmt)*itime) # y-axis limits for linear and log scale
+    elif yscale=='log2':                   plt.ylim(lower_mt, len(G2tmt))                   # or log2 scale
+    if yscale == 'log':                    plt.yscale('log')                                # set y-axis to log scale (if yscale is log)
+    plt.colorbar(BB)                                                                        # colorbar      
+    plt.tight_layout(); plt.show()
 
 
-############################
-##### GET TIME 4 G2tmt #####
-############################
+#############################
+##### GET TIMES 4 G2tmt #####
+#############################
 
 def get_t_G2tmt(itime, G2tmt):
     return [np.arange(itime*2**b, (G2tmt[0].shape[0]+1) * itime, itime*2**b) for b in range(len(G2tmt))]
+
+def get_dt_G2tmt(itime, G2tmt):
+    return np.array([itime*2**b for b in range(len(G2tmt))])
 
 
 ###############################
@@ -1205,9 +1161,9 @@ def get_g2mt(itime, G2tmt):
     return t_g2mt, g2mt, dg2mt
 
 
-#################################
-##### CUT G2t @ (tmin,tmax) #####
-#################################
+###################################
+##### CUT G2tmt @ (tmin,tmax) #####
+###################################
 
 def cut_G2tmt(itime, G2tmt, tmin=None, tmax=None):
     G2tmt_cut = []

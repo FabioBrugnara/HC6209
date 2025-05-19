@@ -7,39 +7,20 @@ A python library for loading and processing data from the ID10 beamline at the E
 Author: Fabio Brugnara
 """
 
-### IMPORT SCIENTIFIC LIBRARIES ###
+### IMPORT LIBRARIES ###
 import os
 import numpy as np
-import pandas as pd
-from scipy import sparse
-import matplotlib.pyplot as plt
-
-### IMPORT OTHER LIBRARIES ###
-import h5py # for hdf5 file reading
-import hdf5plugin # for hdf5 file reading
+from scipy import sparse                # for sparse array in scipy
+import h5py                             # for hdf5 file reading
+import hdf5plugin                       # for hdf5 file reading (specific compression)
 from joblib import Parallel, delayed    # for parallel processing
 
-##### FILE PARAMETERS ######
+##### DETECTOR PARAMETERS ######
 Nx = 2162
 Ny = 2068
 Npx = Nx*Ny
-############################
-
-##### DETECTOR DIMENSION #####
 lxp, lyp = 75e-6, 75e-6 #m
-##############################
-
-
-######## OF MASK OF LINES OF E4M DETECTOR ##########
-OF = np.zeros((Nx, Ny), dtype=bool)
-OF[512:550, :]   = True
-OF[1062:1100, :] = True
-OF[1612:1650, :] = True
-OF[:, 1028:1040] = True
-OF[:, 513:515]   = True
-OF[:, 1553:1555] = True
-OF = OF.flatten()
-####################################################
+################################
 
 ###################
 ### SET VERSION ###
@@ -54,22 +35,24 @@ def set_version(v):
         v: string
             Version of the ID10 line ('v1', 'v2', or new others ...)
     '''
-    global V, Nfmax_dense_file, Nfmax_sparse_file, len_dataset_string, len_scan_string, len_fileidx_string, df_eiger4m_entry
+    global V, Nfmax_dense_file, Nfmax_sparse_file, len_dataset_string, len_scan_string, len_fileidx_string, dense_eiger4m_filename, sparse_eiger4m_filename
     if v=='v1':
         V = 'v1'
-        Nfmax_dense_file = 2000 # this is the default value
+        Nfmax_dense_file   = 2000 # this is the default value
         len_dataset_string = len_scan_string = 4
         len_fileidx_string = 4
-        df_eiger4m_entry = 'eiger4m'
+        dense_eiger4m_filename   = 'eiger4m_'
+        sparse_eiger4m_filename  = None
 
     elif v=='v2':
         V = 'v2'
-        Nfmax_dense_file = 2000 # this is the default value
-        Nfmax_sparse_file = 10000 # this is the default value
+        Nfmax_dense_file   = None     # this is the default value
+        Nfmax_sparse_file  = None   # this is the default value
         len_dataset_string = 4
-        len_scan_string = 4
+        len_scan_string    = 4
         len_fileidx_string = 5
-        df_eiger4m_entry = 'eiger4m_v2'
+        dense_eiger4m_filename   = 'eiger4m_v2_frame_0_'
+        sparse_eiger4m_filename  = 'eiger4m_v2_sparse_frame_0_'
 
     ### add other versions here !!!
 
@@ -156,8 +139,7 @@ def load_pilatus(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, L
     Load pilatus images from h5 file.
     
     Work in progress
-    1) work with multiple files?
-    2) directly load files from the directory (not relayng on the master hdf5 file)
+    1) maybe, better to do not relay on the master file, but directly look at the scan folder? But pilatus files are few, so maybe is fine to load them from the master file.
 
     Parameters
     ----------
@@ -173,14 +155,14 @@ def load_pilatus(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, L
         number of the first image
     Nff: int
         number of the last image
+    Lbin: int
+        binning factor (default=None)
 
     Returns
     -------
     pilatus: dict
         dictionary with pilatus images
     '''
-
-    if Lbin is None: Lbin = 1
 
     # LOAD H5 FILE
     h5file = h5py.File(raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/' + sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'.h5', 'r')[str(Nscan)+'.1']
@@ -189,6 +171,7 @@ def load_pilatus(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, L
     pilatus_data = h5file['measurement']['pilatus300k'][Nfi:Nff]
 
     # BIN IMMAGES (IF Lbin>1)
+    if Lbin is None: Lbin = 1
     if Lbin > 1:
         pilatus_data = pilatus_data[0:pilatus_data.shape[0]//Lbin*Lbin]
         pilatus_data = pilatus_data.reshape((pilatus_data.shape[0]//Lbin, Lbin, pilatus_data.shape[1], pilatus_data.shape[2])).sum(axis=1)
@@ -200,7 +183,7 @@ def load_pilatus(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, L
 ######### LOAD E4M DATA ###############
 #######################################
 
-def load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi, Nff,  n_jobs=6, mask=None, tosparse=False):
+def load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None,  n_jobs=6, load_mask=None, tosparse=False, OF_mask_v1=None):
     '''
     Load all the e4m data present in a scan.
     If tosparse=True (default) convert the dataframes to a sparse array.
@@ -219,24 +202,29 @@ def load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi, Nff,  n_jobs=6
     ----------
         raw_folder: string
             the folder where the raw data is stored
-        file_name: string
+        sample_name: string
             the name of the file
+        Ndataset: int
+            the dataset number
         Nscan: int
-            the scan number
+            the scan 
+        Nfi: int
+            the first frame to load (default=None)
+        Nff: int
+            the last frame to load (default=None)
         n_jobs: int
             number of parallel jobs to use (default=6)
+        load_mask: np.array
+            a mask that allow to select the pixels to load (default=None)
         tosparse: bool
             if True return a sparse array, otherwise return a numpy array (default=True)
-        Nf4overflow: int
-            the number of frames to use to generate the overflow image (default=10)
+        OF_mask_v1: np.array
+            mask of the overflow pixels to be set to 0 (usefull only for v1 version, for conversion into the sparse format) (default=None)
     
     Returns
     -------
-        OF: np.array
-            the overflow image (ONLY FOR OLDER ID10 VERSIONS ('v1')!!!)
         sA: scipy.sparse.csr_array
             the sparse array with the e4m data (shape: Nf x Npx)
-    
     '''
 
     print('Loading dense array ...')
@@ -244,53 +232,43 @@ def load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi, Nff,  n_jobs=6
     ### E4M DATA FOLDER
     h5_folder = raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/' + 'scan'+str(Nscan).zfill(len_dataset_string) + '/'
 
-    #### GET THE INDEX (number) OF THE FILES THAT SHOULD BE LOADED
+    #### GET THE INDEXES OF THE FILES THAT SHOULD BE LOADED
     if Nfi is None: file_i = 0 # if Nfi is None, start from the file 0
     else: file_i = Nfi//Nfmax_dense_file
-    if Nff is None: file_f = len([i for i in os.listdir(h5_folder) if i.startswith('eiger4m_v2_frame_0_')]) # if Nff is None, finish at the last file
+    if Nff is None: file_f = len([i for i in os.listdir(h5_folder) if i.startswith(dense_eiger4m_filename)]) # if Nff is None, finish at the last file
     else : file_f = Nff//Nfmax_dense_file+1
 
-
     ### LOAD FRAMES BY FILE FUNCTION (file i, with Nfi, Nff refered to the full run)
-    def load_framesbyfile(i, Nfi, Nff, file_i, file_f): # function to loop over files in multiprocessing
-        # IMPORT HDF5PLUGIN (needed for the parallel loop)
-        import hdf5plugin
+    def load_framesbyfile(i):
+        import hdf5plugin # import hdf5plugin (needed for the parallel loop)
 
-        # LOAD H5 FILE
-        if V=='v1':
-            print(   '\t -> loading file', 'eiger4m_'            + str(i).zfill(len_fileidx_string) + '.h5', '('+str(i+1)+'/'+str(file_f-file_i)+' loops)')
-            h5file = h5py.File(h5_folder + 'eiger4m_'            + str(i).zfill(len_fileidx_string) + '.h5', 'r')
-        elif V=='v2':
-            print(   '\t -> loading file', 'eiger4m_v2_frame_0_' + str(i).zfill(len_fileidx_string) + '.h5', '('+str(i+1)+'/'+str(file_f-file_i)+' loops)')
-            h5file = h5py.File(h5_folder + 'eiger4m_v2_frame_0_' + str(i).zfill(len_fileidx_string) + '.h5', 'r')
-
-        # GET DATA
-        if (file_i==i)  and (Nfi is not None):   a = Nfi%Nfmax_dense_file
-        else: a = 0
-        if (file_f==i+1) and (Nff is not None):  b = Nff%Nfmax_dense_file
-        else: b = Nfmax_dense_file
+        # LOAD H5 FILE (setting the correct file name for the version)
+        print(   '\t -> loading file', dense_eiger4m_filename + str(i).zfill(len_fileidx_string) + '.h5', '('+str(i+1)+'/'+str(file_f-file_i)+' loops)')
+        h5file = h5py.File(h5_folder + dense_eiger4m_filename + str(i).zfill(len_fileidx_string) + '.h5', 'r')
 
         # LOAD DATA
-        npA = h5file['entry_0000']['measurement']['data'][a:b].reshape((b-a, Npx))
+        if (file_i==i)  and (Nfi is not None):   a = Nfi%Nfmax_dense_file                     # get initial frame for the file
+        else: a = 0
+        if (file_f==i+1) and (Nff is not None):  b = Nff%Nfmax_dense_file                     # get final frame for the file
+        else: b = Nfmax_dense_file
+        npA = h5file['entry_0000']['measurement']['data'][a:b]                                # load data
+        npA = npA.reshape((npA.shape[0], Npx))                                                # reshape data from (Nx, Ny) to (Npx)
+        if OF_mask_v1 is not None: npA[:,OF_mask_v1] = 0                                      # remove overflow values for version v1 (if OF_mask_v1 is not None)
+        if load_mask is not None: npA = npA[:,load_mask]                                      # apply load_mask (if load_mask is not None)
+        if tosparse: return sparse.csr_array(npA)                                             # convert to sparse array and return (if tosparse is True)
+        else:        return npA                                                               # return dense array (if tosparse is False)
 
-        if V=='v1':
-            npA[:,OF] = 0 # remove overflow
+    A = Parallel(n_jobs=n_jobs)(delayed(load_framesbyfile)(i) for i in range(file_i, file_f)) # PARALLEL LOOP (gose from file_i to file_f)
 
-        if mask is not None: npA = npA[:,mask] # apply mask
-
-        if tosparse: return sparse.csr_array(npA) # fill sparse array list
-        else:        return npA # or fill numpy array list
-
-    #  PARALLEL LOOP (gose from file_i to file_f)
-    A = Parallel(n_jobs=n_jobs, require='sharedmem')(delayed(load_framesbyfile)(i, Nfi, Nff, file_i, file_f) for i in range(file_i, file_f))
     print('Done!')
 
-    #### CONACATENATE THE RESULT ####
+    ### CONACATENATE THE RESULT
     print('Concatenating vectors ...')
     if not tosparse: A = np.vstack(A)
     else: A = sparse.vstack(A)
     print('Done!')
 
+    ### PRINT FEW INFO
     print('--------------------------------------------------------')
     if tosparse:       print('Sparsity:    ', '{:.1e}'.format(A.size/(A.shape[0]*A.shape[1])))
     if tosparse:       print('Memory usage (scipy.csr_array):', '{:.3f}'.format((A.data.nbytes + A.indices.nbytes + A.indptr.nbytes)/1024**3), 'GB', '(np.array usage:', '{:.3f}'.format(A.shape[0]*A.shape[1]*4/1024**3), 'GB)')
@@ -334,29 +312,21 @@ def load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None
             number of parallel jobs to use (default=10)
     Returns
     -------
-        OF: np.array
-            the overflow image (ONLY FOR OLDER ID10 VERSIONS ('v1')!!!)
         sA: scipy.sparse.csr_array
             the sparse array with the e4m data (shape: Nf x Npx)
     '''
-    ### V1 VERSION ###
-    # The data are loaded from a single file which has been generated by this library (npz format) using the function ID10_tools.save_sparse_e4m_v1. The overflow image is saved in a separate file (npy format).
-    # With this version the overflow image should be also loaded from the file.
-    if V=='v1':
-        e4m_sparse_file   = raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/scan'+str(Nscan).zfill(len_scan_string)+'/eiger4m_sparse.npz'
-        e4m_overflow_file = raw_folder + raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/scan'+str(Nscan).zfill(len_scan_string)+'/eiger4m_overflow.npy'
 
+    if V=='v1':
+        ### V1 VERSION ###
+        # The data are loaded from a single file which has been generated by this library (npz format) using the function ID10_tools.save_sparse_e4m_v1.
+        e4m_sparse_file   = raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/scan'+str(Nscan).zfill(len_scan_string)+'/eiger4m_sparse.npz'
         print('Loading sparse array ...')    
         sA = sparse.load_npz(e4m_sparse_file).tocsr()
         print('\t | Sparse array loaded from', e4m_sparse_file)
         print('\t | Sparsity:    ', '{:.1e}'.format(sA.size/(sA.shape[0]*sA.shape[1])))
         print('\t | Memory usage (scipy.csr_array):', '{:.3f}'.format((sA.data.nbytes + sA.indices.nbytes + sA.indptr.nbytes)/1024**3), 'GB', '(np.array usage:', '{:.3f}'.format(sA.shape[0]*sA.shape[1]*4/1024**3), 'GB)')
         print('Done!')
-        print('Loading overflow array ...')
-        OF = np.load(e4m_overflow_file)
-        print('\t | Overflow array loaded from', e4m_overflow_file)
-        print('Done!')
-        return OF, sA
+    
     
     elif V=='v2':
         print('Loading sparse array ...')  
@@ -370,49 +340,42 @@ def load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None
         else : file_f = Nff//Nfmax_sparse_file+1
 
         ### LOAD FRAMES BY FILE FUNCTION (file i, with Nfi, Nff refered to the full run)
-        def load_framesbyfile(i, Nfi, Nff, file_i, file_f, mask=None):
-                # IMPORT HDF5PLUGIN (needed for the parallel loop)
-                import hdf5plugin
+        def load_framesbyfile(i):
+                import hdf5plugin # import hdf5plugin (needed for the parallel loop)
 
-                # LOAD H5 FILE
+                # LOAD H5 FILE (for version v2)
                 print(   '\t -> loading file', 'eiger4m_v2_sparse_frame_0_' + str(i).zfill(len_fileidx_string) + '.h5', '('+str(i+1)+'/'+str(file_f-file_i)+' loops)')
                 h5file = h5py.File(h5_folder + 'eiger4m_v2_sparse_frame_0_' + str(i).zfill(len_fileidx_string) + '.h5', 'r')
 
-                # GET DATA IN CSR FORMAT
-                # load frame_ptr (use Nfi and Nff to get the correct frames)
+                # LOAD DATA
                 a, b = None, None
-                if (file_i==i)  and(Nfi is not None): a = Nfi%Nfmax_sparse_file
+                if (file_i==i  )and(Nfi is not None): a = Nfi%Nfmax_sparse_file
                 if (file_f==i+1)and(Nff is not None): b = Nff%Nfmax_sparse_file+1
                 
-                frame_ptr = h5file['entry_0000']['measurement']['data']['frame_ptr'][a:b]
-                index =     h5file['entry_0000']['measurement']['data']['index']    [frame_ptr[0]:frame_ptr[-1]]
-                intensity = h5file['entry_0000']['measurement']['data']['intensity'][frame_ptr[0]:frame_ptr[-1]]
+                frame_ptr = h5file['entry_0000']['measurement']['data']['frame_ptr'][a:b]                                  # load frame_ptr (use Nfi and Nff to get the correct frames)
+                index =     h5file['entry_0000']['measurement']['data']['index']    [frame_ptr[0]:frame_ptr[-1]]           # load index (use frame_ptr to get the correct index)
+                intensity = h5file['entry_0000']['measurement']['data']['intensity'][frame_ptr[0]:frame_ptr[-1]]           # load intensity (use frame_ptr to get the correct intensity)
+                if (file_i==i) and (Nfi is not None): frame_ptr = frame_ptr-frame_ptr[0]                                   # If necessary, reset frame_ptr starting from 0 (has to do with the csr array creation)
+                out = sparse.csr_array((intensity, index, frame_ptr), shape=(frame_ptr.shape[0]-1, Npx), dtype=np.float32) # create the sparse array (csr format with np.float32)
+                if mask is not None: out = out[:,mask]                                                                     # apply the mask (if mask is not None)
+                return  out                                                                                                # return sparse array
 
-                # If necessary, reset frame_ptr starting from 0 (has to do with the csr array creation)
-                if (file_i==i) and (Nfi is not None): frame_ptr = frame_ptr-frame_ptr[0]
-                
-                out = sparse.csr_array((intensity, index, frame_ptr), shape=(frame_ptr.shape[0]-1, Npx))
-                if mask is not None: out = out[:,mask]
-                return  out
-        # PARALLEL LOOP (gose from file_i to file_f)
-        sA = Parallel(n_jobs=n_jobs)(delayed(load_framesbyfile)(i, Nfi, Nff, file_i, file_f, mask) for i in range(file_i, file_f))
+        sA = Parallel(n_jobs=n_jobs)(delayed(load_framesbyfile)(i) for i in range(file_i, file_f))                         # PARALLEL LOOP (gose from file_i to file_f)
+        
         print('Done!')
 
-        #### CONACATENATE THE RESULT ####
+        ### CONACATENATE THE RESULT
         print('Concatenating vectors ...')
         sA = sparse.vstack(sA)
         print('Done!')
 
-
+        ### PRINT FEW INFO
         print('\t | Sparse array loaded from', h5_folder)
         print('\t | Shape:      ', sA.shape)
         print('\t | Sparsity:    ', '{:.1e}'.format(sA.size/(sA.shape[0]*sA.shape[1])))
         print('\t | Memory usage (scipy.csr_array):', '{:.3f}'.format((sA.data.nbytes + sA.indices.nbytes + sA.indptr.nbytes)/1024**3), 'GB', '(np.array usage:', '{:.3f}'.format(sA.shape[0]*sA.shape[1]*4/1024**3), 'GB)')
 
-        return sA
-
-    else: print('Version not recognized! Please set the version with ID10_tools.set_version(v).\n')
-
+    return sA
 
 
 ###############################################################################################################
@@ -451,7 +414,7 @@ def get_Nbit_v1(raw_folder, sample_name, Ndataset, Nscan):
     h5file = h5py.File(e4m_file, 'r')[str(Nscan)+'.1']
 
     # LOAD EIGER4M DF LINK
-    df = h5file['measurement'][df_eiger4m_entry]
+    df = h5file['measurement']['eiger4m']
 
     # TAKE THE FIRST IMAGE FROM THE FIRST FILE
     npA = df[0]
@@ -471,27 +434,13 @@ def get_Nbit_v1(raw_folder, sample_name, Ndataset, Nscan):
 
 def save_sparse_e4m_v1(OF, sA, raw_folder, sample_name, Ndataset, Nscan):
     '''
-    Save the sparse array and the overflow image in the correct e4m raw_data folder. This function is usefull only for the older version of the ID10 line ('v1'). In the new version ('v2') the data is already saved in a sparse format.
+    NOT WORKING ANYMORE DUE TO SMALL CHANGES IN load_dense_e4m FUNCTION, MEANING ALSO IN THE FUNCTION ID10_tools.convert_dense_e4m_v1!!!
 
     Future perspectives
-    1) save sparse array in multiple files to load them faster in parallel\n
-
-    Parameters
-    ----------
-        OF: np.array
-            the overflow image
-        sA: scipy.sparse.csr_array
-            the sparse array with the e4m data (shape: Nf x Npx)
-        raw_folder: str
-            the folder where the raw data is stored
-        sample_name: str
-            the name of the sample
-        Ndataset: int
-            the number of the dataset
-        Nscan: int
-            the scan number
-            
+    1) save sparse array in multiple files to load them faster in parallel, following the v2 esrf convenction! \n
     '''
+
+    raise ValueError('This function is not working anymore! Please, rewrite the function to use the new load_dense_e4m function.\n')
 
     e4m_sparse_file   = raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/scan'+str(Nscan).zfill(len_scan_string)+'/eiger4m_sparse.npz'
     e4m_overflow_file = raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/scan'+str(Nscan).zfill(len_scan_string)+'/eiger4m_overflow.npy'
@@ -515,26 +464,11 @@ def save_sparse_e4m_v1(OF, sA, raw_folder, sample_name, Ndataset, Nscan):
 
 def convert_dense_e4m_v1(raw_folder, sample_name, Ndataset, Nscan, n_jobs=6, of_value=None, Nf4overflow=10,):
     '''
-    Convert the e4m data in the master file to a sparse array. The function generate an image (frame) of the overflow values selecting the pixel that are in overfllows in all the first Nf4overflow frames. This image, called OF, can be then used to mask the overflow values in the sparse array.
-
-    Parameters
-    ----------
-        raw_folder: str
-            the folder where the raw data is stored
-        file_name: str
-            the name of the file
-        Nscan: int
-            the scan number
-        Nf4overflow: int
-            the number of frames to use to generate the overflow image (default=10)
-    
-    Returns
-    -------
-        OF: np.array
-            the overflow image#################
-        sA: scipy.sparse.csr_array
-            the sparse array with the e4m data (shape: Nf x Npx)
+    NOT WORKING ANYMORE DUE TO SMALL CHANGES IN load_dense_e4m FUNCTION!!!
+    SHOULD ALSO (MAYBE) IMPLEMENTED THE ESRF LIKE SPARSE SAVING FORMAT IN HDFL MULTIPLE FILES!!
     '''
+
+    raise ValueError('This function is not working anymore! Please, rewrite the function to use the new load_dense_e4m function.\n')
 
     print('CONVERTING '+sample_name+', DATASET '+str(Ndataset).zfill(len_dataset_string)+', SCAN '+str(Nscan).zfill(len_scan_string)+' TO SPARSE ARRAY ...\n')
     OF, sA = load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, tosparse=True, Nf4overflow=Nf4overflow, n_jobs=n_jobs, of_value=of_value)
