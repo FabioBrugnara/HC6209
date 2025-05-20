@@ -12,12 +12,14 @@ Author: Fabio Brugnara
 import time
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from tqdm import tqdm                                        # for progress bar
 from scipy import sparse                                     # for sparse array in scipy
 from scipy.ndimage import gaussian_filter, gaussian_filter1d # for Gaussian filtering in G2t plotting
 from sparse_dot_mkl import dot_product_mkl, gram_matrix_mkl  # for fast (dense and sparse) matrix multiplication
 import numexpr as ne                                         # for parallelized numpy operations
 from XPCScy_tools.XPCScy_tools import mean_trace_float64     # for C-implemented functions
+import pyFAI                                                 # for azimuthal integration 
 
 
 ### VARIABLES ###
@@ -197,7 +199,7 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
     '''
 
     # CHECK e4m_data AND load_mask DIMENSION
-    if (e4m_data.shape[1] != Npx) and (load_mask is None):     raise ValueError('Cannot generate plots from already masked data! Please provide the load_mask!')
+    if (e4m_data.shape[1] != Npx) and (load_mask is None):     raise ValueError('Data are masked at loading! Please provide the load_mask!')
     if (load_mask is not None) and (mask is not None):         raise ValueError('Cannot apply mask to masked loaded data!')
     if (e4m_data.shape[1] == Npx) and (load_mask is not None): raise ValueError('Cannot use load_mask with already masked data!')
     if load_mask is not None:
@@ -540,6 +542,98 @@ def get_It(e4m_data, itime, mask=None, Nfi=None, Nff=None, Lbin=None, Nstep=None
     t_It = np.linspace(Nfi*itime, Nff*itime, It.shape[0])                                              # BUILD THE TIME VECTOR    
 
     return t_It, It
+
+
+############################
+######## COMPUTE SQ ########
+############################
+
+def get_Sq(pilatus_data, ponifile, mask, npt=1024, print_ponifile=False):
+    """
+    Perform azimuthal integration on a stack of 2D detector images to obtain the 1D scattering profile S(q).
+    
+    Parameters
+    ----------
+    pilatus_data : np.ndarray
+        3D array of detector images with shape (n_frames, height, width).
+    ponifile : str
+        Path to the pyFAI calibration (.poni) file containing detector geometry.
+    mask : np.ndarray
+        2D boolean array with the same shape as a single detector image, where True values are masked (ignored).
+    npt : int, optional
+        Number of points in the resulting 1D q profile (default is 1024).
+    print_ponifile : bool, optional
+        If True, prints the calibration parameters loaded from the poni file (default is False).
+    
+    Returns
+    -------
+    Q : np.ndarray
+        1D array of q values (momentum transfer) in Å⁻¹.
+    azav : np.ndarray
+        2D array of azimuthally averaged intensities with shape (n_frames, npt).
+    dazaf : np.ndarray
+        2D array of estimated errors for the azimuthally averaged intensities with shape (n_frames, npt).
+    
+    Notes
+    -----
+    This function uses pyFAI for azimuthal integration and assumes Poisson statistics for error estimation.
+    """
+
+    ai = pyFAI.load(ponifile)   # Load the calibration file
+
+    if print_ponifile:          # Print the calibration parameters
+        print(f'Calibration parameters (from \'{ponifile}\'):')
+        print('-----------------------------------------------------------------------------------------------')
+        print(ai)
+        print('-----------------------------------------------------------------------------------------------\n')
+    
+    t0 = time.time()
+    print('Computing azimuthal integration...')
+    azav, dazaf  = np.zeros((pilatus_data.shape[0], npt)), np.zeros((pilatus_data.shape[0], npt))  # Initialize arrays for azimuthal integration and errors
+    for f in tqdm(range(pilatus_data.shape[0])):
+        Q, azav[f], dazaf[f] = ai.integrate1d(data=pilatus_data[f], npt=npt, mask=mask, polarization_factor=-1, unit="q_A^-1", error_model="poisson") # Perform azimuthal integration
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+    return Q, azav, dazaf
+
+
+#########################
+######## PLOT SQ ########
+#########################
+def plot_Sq(q, Sq, dSq=None, itime=None, cmap=cm.copper, lw=2, alpha=0.7):
+    """
+    Plot the static structure factor S(Q) as a function of Q for multiple datasets.
+    
+    Parameters
+    ----------
+    q : array-like
+        1D array of Q values (momentum transfer) in inverse angstroms [$\\AA^{-1}$].
+    Sq : array-like
+        2D array of S(Q) values with shape (n_curves, n_q), where each row corresponds to a dataset to plot.
+    dSq : array-like, optional
+        2D array of uncertainties for S(Q), same shape as Sq. If provided, error bars are shown.
+    itime : array-like or None, optional
+        Array of time values corresponding to each dataset, used for colorbar labeling. If None, colorbar is labeled as 'frame'.
+    cmap : matplotlib colormap, optional
+        Colormap to use for distinguishing datasets. Default is `cm.copper`.
+    lw : float, optional
+        Line width for the plots. Default is 2.
+    alpha : float, optional
+        Transparency for the plot lines. Default is 0.7.
+    """
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    colors = cmap(np.linspace(0, 1, Sq.shape[0]))
+    for i in range(len(Sq)):
+        if dSq is None: ax.plot(q, Sq[i], color=colors[i], alpha=alpha, lw=lw)
+        else: ax.errorbar(q, Sq[i], yerr=dSq[i], color=colors[i], alpha=alpha, lw=lw)
+    ax.set_xlabel("Q [$\\AA^{-1}$]"); ax.set_ylabel("S(Q) [a.u.]")
+
+    if itime is None: itime_4cbar=1
+    else:             itime_4cbar = itime
+    cbar = plt.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=Sq.shape[0]*itime_4cbar)), ax=ax, pad=0.01)
+    if itime is None: cbar.set_label('frame')
+    else:             cbar.set_label('t [s]')
+    plt.tight_layout(); plt.show()
 
 
 #################################
@@ -1032,8 +1126,8 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
     print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
     #  MASK DATA
-    t0 = time.time()
     if mask is not None:
+        t0 = time.time()
         print('Masking data ...')
         Itp = Itp[:,mask]
         print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')

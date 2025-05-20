@@ -87,44 +87,62 @@ def load_scan(raw_folder, sample_name, Ndataset, Nscan):
     '''
 
     # LOAD H5 FILE
-    h5file = h5py.File(raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/' + sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'.h5', 'r')[str(Nscan)+'.1']
-
+    h5file = h5py.File(f"{raw_folder}{sample_name}/{sample_name}_{Ndataset:0{len_dataset_string}d}/{sample_name}_{Ndataset:0{len_dataset_string}d}.h5", 'r')
+    
     # LOAD SCAN PARAMETERS
     scan = {}
-    scan['command'] = h5file['title'][()].decode("utf-8")
-    scan['start_time'] = h5file['start_time'][()].decode("utf-8")
-
-    try: scan['end_time'] = h5file['end_time'][()].decode("utf-8")
+    # general
+    scan['command']       = h5file[f"{Nscan}.1"]['title'][()].decode("utf-8")
+    scan['start_time']    = h5file[f"{Nscan}.1"]['start_time'][()].decode("utf-8")
+    try: scan['end_time'] = h5file[f"{Nscan}.1"]['end_time'][()].decode("utf-8")
     except: pass
 
-    try: scan['fast_timer_trig'] = h5file['measurement']['fast_timer_trig'][:]
+    # triggers
+    try: scan['fast_timer_trig']   = h5file[f"{Nscan}.1"]['measurement']['fast_timer_trig'][:]
     except: pass
-    try: scan['fast_timer_period'] = h5file['measurement']['fast_timer_period'][:]
+    try: scan['fast_timer_period'] = h5file[f"{Nscan}.1"]['measurement']['fast_timer_period'][:]
     except: pass
-
-    try: scan['elapsed_time'] = h5file['measurement']['elapsed_time'][:]
+    try: scan['slow_timer_trig']   = h5file[f"{Nscan}.1"]['measurement']['slow_timer_trig'][:]
     except: pass
-
-    try: scan['xray_energy'] = h5file['instrument']['metadata']['eiger4m']['xray_energy'][()]
-    except: pass
-    try: scan['monoe'] = h5file['instrument']['positioners']['monoe'][()]
+    try: scan['slow_timer_period'] = h5file[f"{Nscan}.1"]['measurement']['slow_timer_period'][:]
     except: pass
 
-    try: scan['eh2diode'] = h5file['measurement']['eh2diode'][:]
+    # energy
+    try: scan['monoe'] = h5file[f"{Nscan}.1"]['instrument']['positioners']['monoe'][()]
     except: pass
-    try: scan['ch2_saxs'] = h5file['measurement']['ch2_saxs'][:]
+
+    # diodes
+    try: scan['eh2diode'] = h5file[f"{Nscan}.1"]['measurement']['eh2diode'][:];
     except: pass
-    try: scan['ys'] = h5file['measurement']['ys'][:]
+    try: scan['ch2_saxs'] = h5file[f"{Nscan}.1"]['measurement']['ch2_saxs'][:]
     except: pass
-    try: scan['zs'] = h5file['measurement']['zs'][:]
+
+    # moror positions
+    try:    scan['delcoup'] = h5file[f"{Nscan}.1"]['instrument']['positioners']['delcoup'][:]
+    except: scan['delcoup'] = h5file[f"{Nscan}.1"]['instrument']['positioners']['delcoup'][()]
+    try:    scan['ys']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['ys'][:]
+    except: scan['ys']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['ys'][()]
+    try:    scan['zs']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['zs'][:]
+    except: scan['zs']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['zs'][()]
+
+    # PID temperatures
+    try:    scan['omega_sample'] = h5file[f"{Nscan}.2"]['measurement']['omega_sample'][:]
     except: pass
-    try: scan['delcoup'] = h5file['instrument']['positioners']['delcoup'][:]
-    except: scan['delcoup'] = h5file['instrument']['positioners']['delcoup'][()]
-    try: scan['current'] = h5file['measurement']['current'][:]
+    try:    scan['omega_body']   = h5file[f"{Nscan}.2"]['measurement']['omega_body'][:]
     except: pass
-    try: scan['mon'] = h5file['measurement']['mon'][:]
+    try:    scan['epoch']        = h5file[f"{Nscan}.2"]['measurement']['epoch'][:]
     except: pass
-    try: scan['det'] = h5file['measurement']['det'][:]
+
+    # version v1 stufs
+    try: scan['elapsed_time'] = h5file[f"{Nscan}.1"]['measurement']['elapsed_time'][:]
+    except: pass
+    try: scan['xray_energy']  = h5file[f"{Nscan}.1"]['instrument']['metadata']['eiger4m']['xray_energy'][()]
+    except: pass
+    try: scan['mon']          = h5file[f"{Nscan}.1"]['measurement']['mon'][:]
+    except: pass
+    try: scan['current']      = h5file[f"{Nscan}.1"]['measurement']['current'][:]
+    except: pass
+    try: scan['det']          = h5file[f"{Nscan}.1"]['measurement']['det'][:]
     except: pass
 
     return scan
@@ -134,7 +152,7 @@ def load_scan(raw_folder, sample_name, Ndataset, Nscan):
 ###### LOAD PILATUS #########
 #############################
 
-def load_pilatus(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, Lbin=None):
+def load_pilatus(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, Nstep=None):
     '''
     Load pilatus images from h5 file.
     
@@ -163,18 +181,14 @@ def load_pilatus(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, L
     pilatus: dict
         dictionary with pilatus images
     '''
+    # Default values
+    if Nstep==None: Nstep = 1
 
     # LOAD H5 FILE
     h5file = h5py.File(raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/' + sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'.h5', 'r')[str(Nscan)+'.1']
 
     # LOAD PILATUS IMAGES
-    pilatus_data = h5file['measurement']['pilatus300k'][Nfi:Nff]
-
-    # BIN IMMAGES (IF Lbin>1)
-    if Lbin is None: Lbin = 1
-    if Lbin > 1:
-        pilatus_data = pilatus_data[0:pilatus_data.shape[0]//Lbin*Lbin]
-        pilatus_data = pilatus_data.reshape((pilatus_data.shape[0]//Lbin, Lbin, pilatus_data.shape[1], pilatus_data.shape[2])).sum(axis=1)
+    pilatus_data = h5file['measurement']['pilatus300k'][Nfi:Nff:Nstep]
 
     return pilatus_data
 
@@ -255,8 +269,8 @@ def load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None,
         npA = npA.reshape((npA.shape[0], Npx))                                                # reshape data from (Nx, Ny) to (Npx)
         if OF_mask_v1 is not None: npA[:,OF_mask_v1] = 0                                      # remove overflow values for version v1 (if OF_mask_v1 is not None)
         if load_mask is not None: npA = npA[:,load_mask]                                      # apply load_mask (if load_mask is not None)
-        if tosparse: return sparse.csr_array(npA)                                             # convert to sparse array and return (if tosparse is True)
-        else:        return npA                                                               # return dense array (if tosparse is False)
+        if tosparse: return sparse.csr_array(npA, dtype=np.float32)                           # convert to sparse array and return (if tosparse is True)              
+        else:        return npA.astype(np.float32)                                            # return dense array (if tosparse is False)
 
     A = Parallel(n_jobs=n_jobs)(delayed(load_framesbyfile)(i) for i in range(file_i, file_f)) # PARALLEL LOOP (gose from file_i to file_f)
 
@@ -282,7 +296,7 @@ def load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None,
 ######## LOAD E4M SPARSE ARRAY ########
 #######################################
 
-def load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, mask=None, n_jobs=10):
+def load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None, load_mask=None, n_jobs=10):
     '''
     Load the sparse array and the overflow image from the correct e4m raw_data folder.
     This function works differently depending on the version of the ID10 line used. 
@@ -306,7 +320,7 @@ def load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None
             the first frame to load (ONLY FOR THE V2 VERSION!) (default=None)
         Nff: int
             the last frame to load (ONLY FOR THE V2 VERSION!) (default=None)
-        mask: np.array
+        load_mask: np.array
             a mask that allow to select the pixels to load (ONLY FOR THE V2 VERSION!) (default=None)
         n_jobs: int
             number of parallel jobs to use (default=10)
@@ -357,7 +371,7 @@ def load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None
                 intensity = h5file['entry_0000']['measurement']['data']['intensity'][frame_ptr[0]:frame_ptr[-1]]           # load intensity (use frame_ptr to get the correct intensity)
                 if (file_i==i) and (Nfi is not None): frame_ptr = frame_ptr-frame_ptr[0]                                   # If necessary, reset frame_ptr starting from 0 (has to do with the csr array creation)
                 out = sparse.csr_array((intensity, index, frame_ptr), shape=(frame_ptr.shape[0]-1, Npx), dtype=np.float32) # create the sparse array (csr format with np.float32)
-                if mask is not None: out = out[:,mask]                                                                     # apply the mask (if mask is not None)
+                if load_mask is not None: out = out[:,load_mask]                                                           # apply the mask (if mask is not None)
                 return  out                                                                                                # return sparse array
 
         sA = Parallel(n_jobs=n_jobs)(delayed(load_framesbyfile)(i) for i in range(file_i, file_f))                         # PARALLEL LOOP (gose from file_i to file_f)
