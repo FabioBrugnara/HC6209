@@ -8,11 +8,10 @@ Author: Fabio Brugnara
 """
 
 ### IMPORT LIBRARIES ###
-import os
+import os, time
 import numpy as np
 from scipy import sparse                # for sparse array in scipy
-import h5py                             # for hdf5 file reading
-import hdf5plugin                       # for hdf5 file reading (specific compression)
+import h5py, hdf5plugin                 # for hdf5 file reading
 from joblib import Parallel, delayed    # for parallel processing
 
 ##### DETECTOR PARAMETERS ######
@@ -240,7 +239,7 @@ def load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None,
         sA: scipy.sparse.csr_array
             the sparse array with the e4m data (shape: Nf x Npx)
     '''
-
+    t0 = time.time()
     print('Loading dense array ...')
 
     ### E4M DATA FOLDER
@@ -274,13 +273,14 @@ def load_dense_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None,
 
     A = Parallel(n_jobs=n_jobs)(delayed(load_framesbyfile)(i) for i in range(file_i, file_f)) # PARALLEL LOOP (gose from file_i to file_f)
 
-    print('Done!')
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
     ### CONACATENATE THE RESULT
+    t0 = time.time()
     print('Concatenating vectors ...')
     if not tosparse: A = np.vstack(A)
     else: A = sparse.vstack(A)
-    print('Done!')
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
     ### PRINT FEW INFO
     print('--------------------------------------------------------')
@@ -343,6 +343,7 @@ def load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None
     
     
     elif V=='v2':
+        t0 = time.time()
         print('Loading sparse array ...')  
         #### E4M DATA FOLDER
         h5_folder =  raw_folder + sample_name+'/' +sample_name+'_'+str(Ndataset).zfill(len_dataset_string)+'/scan'+str(Nscan).zfill(len_scan_string)+'/'
@@ -376,12 +377,13 @@ def load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=None, Nff=None
 
         sA = Parallel(n_jobs=n_jobs)(delayed(load_framesbyfile)(i) for i in range(file_i, file_f))                         # PARALLEL LOOP (gose from file_i to file_f)
         
-        print('Done!')
+        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
         ### CONACATENATE THE RESULT
+        t0 = time.time()
         print('Concatenating vectors ...')
         sA = sparse.vstack(sA)
-        print('Done!')
+        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
         ### PRINT FEW INFO
         print('\t | Sparse array loaded from', h5_folder)

@@ -1,10 +1,11 @@
-# to create env: conda env create -f environment.yml
+# to create env: conda env create -f XPCSenv.yml
 # to remove env: conda remove -n XPCSenv --all
 name: XPCSenv
 channels:
   - defaults
   - conda-forge
 dependencies:
+  - python = 3.13
   - jupyter
   - numpy
   - pandas
@@ -12,9 +13,10 @@ dependencies:
   - seaborn
   - scipy
   - numexpr
-  - h5py
   - joblib
   - cython 
+  - h5py
   - conda-forge::hdf5plugin
   - conda-forge::sparse_dot_mkl
   - conda-forge::tqdm
+  - conda-forge::pyfai

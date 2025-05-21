@@ -11,15 +11,16 @@ Author: Fabio Brugnara
 ### IMPORT LIBRARIES ###
 import time
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-from tqdm import tqdm                                        # for progress bar
-from scipy import sparse                                     # for sparse array in scipy
-from scipy.ndimage import gaussian_filter, gaussian_filter1d # for Gaussian filtering in G2t plotting
-from sparse_dot_mkl import dot_product_mkl, gram_matrix_mkl  # for fast (dense and sparse) matrix multiplication
-import numexpr as ne                                         # for parallelized numpy operations
-from XPCScy_tools.XPCScy_tools import mean_trace_float64     # for C-implemented functions
-import pyFAI                                                 # for azimuthal integration 
+from tqdm import tqdm                                                         # for progress bar
+from scipy import sparse                                                      # for sparse array in scipy
+from scipy.ndimage import gaussian_filter, gaussian_filter1d                  # for Gaussian filtering in G2t plotting
+from sparse_dot_mkl import dot_product_mkl, gram_matrix_mkl                   # for fast (dense and sparse) matrix multiplication
+import numexpr as ne                                                          # for parallelized numpy operations
+from XPCScy_tools.XPCScy_tools import mean_trace_float32, mean_trace_float64  # for C-implemented functions
+import pyFAI                                                                  # for azimuthal integration 
 
 
 ### VARIABLES ###
@@ -631,7 +632,7 @@ def plot_Sq(q, Sq, dSq=None, itime=None, cmap=cm.copper, lw=2, alpha=0.7):
     if itime is None: itime_4cbar=1
     else:             itime_4cbar = itime
     cbar = plt.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=Sq.shape[0]*itime_4cbar)), ax=ax, pad=0.01)
-    if itime is None: cbar.set_label('frame')
+    if itime is None: cbar.set_label  - h5py('frame')
     else:             cbar.set_label('t [s]')
     plt.tight_layout(); plt.show()
 
@@ -812,7 +813,12 @@ def get_g2(dt, G2t, cython=False):
     t0 = time.time()
     if cython:
         print('Computing g2 (using cython code)...')
-        g2 = mean_trace_float64(G2t)
+        if G2t.dtype==np.float32:
+            g2 = mean_trace_float32(G2t)
+        elif G2t.dtype==np.float64:
+            g2 = mean_trace_float64(G2t)
+        else:
+            raise ValueError('G2t dtype not implemented in cython code!')
     else:
         print('Computing g2...')
         g2 = np.array([G2t.diagonal(i).mean() for i in range(1,G2t.shape[0])])
@@ -1008,8 +1014,9 @@ def plot_G2t(G2t, vmin, vmax, itime=None, t1=None, t2=None, x1=None, x2=None, si
     plt.tight_layout()
     plt.show()
 
-
+#####################################################################################################################
 ##################################################### MULTI-TAU #####################################################
+#####################################################################################################################
 
 def _get_symG2t(Itp):
     # Compute G2t upper triangle
@@ -1052,11 +1059,76 @@ def _G2t2G2tmt(G2t, G2tmt, type):
     return G2tmt
 
 
+####################################
+##### PRINT REDUCED Nf CHOICES #####
+####################################
+
+def print_Nf_choices(Nf):
+    """
+    Print the possible choices for reduced Nf, dense depth, and thrown frames.
+    This function computes the possible values of Nf that can be used for dense depth
+    and the number of thrown frames based on the input Nf.
+
+    Parameters
+    ----------
+    Nf : int
+        The number of frames to be reduced.
+    """
+
+    print(f'       Nf = {Nf}    =>    log2(Nf) = {round(np.log2(Nf),2)}')
+    print('----------------------------------------------------')
+    exp_max = int(np.log2(Nf))
+    df = pd.DataFrame(columns=['reduced Nf', 'dense depth (2^x)', 'thrown frames %', 'thrown frames'])
+
+    # exp_max case
+    Nf_red = Nf - 2**(exp_max)
+    df.loc[0] = [f'2**{exp_max}', exp_max, round(Nf_red/Nf*100,1), Nf_red]
+
+    # next cases
+    minus=1
+    for minus in range(1, exp_max//2):
+        n = int(Nf/(2**(exp_max-minus)))
+        Nf_red = Nf - n*2**(exp_max-minus)
+        if df.iloc[-1]['thrown frames'] > Nf_red:
+            df.loc[len(df)] = [f'{n}*2**{exp_max-minus}', exp_max-minus, round(Nf_red/Nf*100), Nf_red]
+
+    print(df)
+    print('----------------------------------------------------')
+
+
 #########################################
 ##### GET multitau G2t 4 dense data #####
 #########################################
 
 def get_G2tmt_4dense(e4m_data, dense_depth, mask=None, Nfi=None, Nff=None):
+    """
+    Compute the multitau (mt) G2t correlation from dense e4m_data.
+
+    Parameters
+    ----------
+    e4m_data : np.ndarray
+        Dense e4m_data of shape (Nf, Npx).
+    dense_depth : int
+        The number of dense multitau levels.
+    mask : np.ndarray, optional
+        Boolean or index mask to select pixels for the computation. If None, all pixels are used.
+    Nfi : int, optional
+        Initial frame to consider (inclusive).
+    Nff : int, optional
+        Final frame to consider (exclusive).
+
+    Returns
+    -------
+    G2tmt : list of np.ndarray
+        List containing the dense multitau G2t correlation arrays for each level.
+
+    Notes
+    -----
+    - The function applies a mask if provided, and processes the data in float32 precision.
+    - At each dense multitau level, the data is binned by a factor of 2.
+    - The function is currently marked as untested.
+    """
+    
 
     print('WARNING: the function is still not tested!')
 
@@ -1110,7 +1182,29 @@ def get_G2tmt_4dense(e4m_data, dense_depth, mask=None, Nfi=None, Nff=None):
 ##########################################
 
 def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, Nff=None):
+    """
+    Compute the multitau (mt) G2t correlation from sparse e4m_data.
 
+    Parameters
+    ----------
+    e4m_data : sparse.csr_matrix
+        Sparse e4m_data of shape (Nf, Npx).
+    sparse_depth : int
+        The number of sparse multitau levels.
+    dense_depth : int
+        The number of dense multitau levels.
+    mask : np.ndarray, optional
+        Boolean mask to select pixels for the computation. If None, all pixels are used.
+    Nfi : int, optional
+        Initial frame to consider (inclusive).
+    Nff : int, optional
+        Final frame to consider (exclusive).
+
+    Returns
+    -------
+    G2tmt : list of np.ndarray
+        List containing the sparse multitau G2t correlation arrays for each level.
+    """
     # DEFAULT VALUES
     if Nfi == None: Nfi = 0
     if Nff == None: Nff = e4m_data.shape[0]
@@ -1192,6 +1286,33 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
 #############################
 
 def plot_G2tmt(G2tmt, itime, vmin, vmax, lower_mt=4, yscale='log2', filter_layer=None, borders=False, xlims=None, vlines=None):
+    """
+    Plot a multi-tau correlation matrix (G2tmt) using broken bar plot.
+
+    Parameters
+    ----------
+    G2tmt : list or array-like
+        List of 1D numpy arrays containing the multi-tau correlation data for each layer.
+    itime : float
+        Integration time per frame (in seconds).
+    vmin : float
+        Minimum value for color scaling.
+    vmax : float
+        Maximum value for color scaling.
+    lower_mt : int, optional
+        The starting layer (multi-tau level) to plot. Default is 4.
+    yscale : {'log2', 'log', 'lin'}, optional
+        Y-axis scaling mode. 'log2' for log2 scale (default), 'log' for logarithmic, 'lin' for linear.
+    filter_layer : int or None, optional
+        If set, applies a Gaussian filter to layers below this value. Default is None (no filtering).
+    borders : bool, optional
+        If True, draws borders around the bars. Default is False.
+    xlims : tuple or None, optional
+        Tuple specifying x-axis limits (min, max). Default is None (auto).
+    vlines : list or None, optional
+        List of x-values at which to draw vertical dashed red lines. Default is None.
+    """
+
 
     if borders: linewidth = .2
     else:       linewidth = 0
@@ -1249,6 +1370,26 @@ def get_dt_G2tmt(itime, G2tmt):
 ###############################
 
 def get_g2mt(itime, G2tmt):
+    """
+    Calculate the time delays, mean, and standard error of g2 values for multi-tau XPCS analysis.
+
+    Parameters
+    ----------
+    itime : float
+        The base time interval between frames (in seconds).
+    G2tmt : list or array-like of arrays
+        A list or array where each element is an array of g2 values corresponding to a specific time delay bin.
+    
+    Returns
+    -------
+    t_g2mt : numpy.ndarray
+        Array of time delays for each multi-tau bin.
+    g2mt : numpy.ndarray
+        Array of mean g2 values for each bin.
+    dg2mt : numpy.ndarray
+        Array of standard errors of the mean for each bin.
+    """
+
     t_g2mt = 2**np.arange(len(G2tmt))*itime
     g2mt = np.array([np.mean(G2tmt[b]) for b in range(len(G2tmt))])
     dg2mt = np.array([np.std(G2tmt[b])/np.sqrt(G2tmt[b].size) for b in range(len(G2tmt))])
@@ -1260,6 +1401,26 @@ def get_g2mt(itime, G2tmt):
 ###################################
 
 def cut_G2tmt(itime, G2tmt, tmin=None, tmax=None):
+    """
+    Cuts the G2tmt arrays based on specified minimum and maximum time thresholds.
+
+    Parameters
+    ----------
+    itime : float or int
+        The time interval between points in the G2tmt arrays.
+    G2tmt : list of numpy.ndarray
+        List of arrays containing G2tmt data, where each array corresponds to a different binning level.
+    tmin : float or int, optional
+        The minimum time threshold. If None, defaults to 0.
+    tmax : float or int, optional
+        The maximum time threshold. If None, defaults to the maximum time in the data.
+    
+    Returns
+    -------
+    G2tmt_cut : list of numpy.ndarray
+        List of arrays representing the cut G2tmt data, where each array corresponds to a different multitau level.
+    """
+    
     G2tmt_cut = []
     for b in range(len(G2tmt)):
         if tmin == None: tmin = 0
