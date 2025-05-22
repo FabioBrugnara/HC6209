@@ -9,7 +9,7 @@ Author: Fabio Brugnara
 
 
 ### IMPORT LIBRARIES ###
-import time
+import time, gc
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -1048,7 +1048,7 @@ def _get_nonsymG2t(Itp1, Itp2):
 def _G2t2G2tmt(G2t, G2tmt, type):
     for b in range(int(np.log2(G2t.shape[0]))):
         if type=='sym':
-            G2tmt[b].append(G2t.diagonal(offset=1))
+            G2tmt[b].append(G2t.diagonal(offset=1).copy())
         elif type=='non-sym':
             G2tmt[b].append(np.array([G2t[-1,0]]))
 
@@ -1056,6 +1056,7 @@ def _G2t2G2tmt(G2t, G2tmt, type):
         G2t = dot_product_mkl(BIN_matrix, G2t)
         G2t = dot_product_mkl(BIN_matrix, G2t.T)
         G2t= G2t.T/4
+    
     return G2tmt
 
 
@@ -1232,7 +1233,7 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
     print('\t | memory usage (sparse.csr_array @ '+str(Itp.dtype)+') =', round((Itp.data.nbytes+Itp.indices.nbytes+Itp.indptr.nbytes)/1024**3,3), 'GB')
 
     ### CHECK PARAMS CONDIOTIONS ###
-    if sparse_depth >= dense_depth: raise ValueError('sparse_depth must be less/equal than dense_depth!')
+    if sparse_depth > dense_depth: raise ValueError('sparse_depth must be less/equal than dense_depth!')
     if Itp.shape[0]//2**dense_depth != Itp.shape[0]/2**dense_depth: raise ValueError('# of frames must be a multiple of 2^dense_depth!')
 
     ### SPARSE COMPUTATION ###
@@ -1241,9 +1242,10 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
 
     G2tmt = [[] for i in range(sparse_depth)]
     N_sparseloops = Itp.shape[0]//2**sparse_depth
+    Itp1 = Itp[:2**sparse_depth]
     for N in tqdm(range(N_sparseloops)):
-        Itp1 = Itp[N*2**sparse_depth:(N+1)*2**sparse_depth]
-        Itp2 = Itp[(N+1)*2**sparse_depth:(N+2)*2**sparse_depth]
+        if N != 0:                Itp1 = Itp2
+        if N != N_sparseloops-1:  Itp2 = Itp[(N+1)*2**sparse_depth:(N+2)*2**sparse_depth]
 
         # Compute central G2t
         G2t = _get_symG2t(Itp1)
@@ -1253,6 +1255,8 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
         if N != N_sparseloops-1:
             G2t = _get_nonsymG2t(Itp1, Itp2)
             G2tmt = _G2t2G2tmt(G2t, G2tmt, type='non-sym')
+        
+        #del G2t, Itp1, Itp2; gc.collect()  # for non-automatic memory management (but slower)
 
     # Concatenate the G2tmt
     for i in range(len(G2tmt)): G2tmt[i] = np.concat(G2tmt[i])
@@ -1275,7 +1279,7 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
 
             # Vin Itp by a factor 2
             BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2, np.arange(Itp.shape[0]))), dtype=np.float32)
-            Itp = dot_product_mkl(BIN_matrix, Itp, cast=True)
+            Itp = dot_product_mkl(BIN_matrix, Itp)
 
         print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
