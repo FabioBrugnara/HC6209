@@ -1045,8 +1045,11 @@ def _get_nonsymG2t(Itp1, Itp2):
     ne.evaluate('G2t*Itr*Itc', out=G2t)
     return G2t
 
-def _G2t2G2tmt(G2t, G2tmt, type):
-    for b in range(int(np.log2(G2t.shape[0]))):
+def _G2t2G2tmt(G2t, type):
+    if type=='sym':       R = range(int(np.log2(G2t.shape[0])))
+    elif type=='non-sym': R = range(int(np.log2(G2t.shape[0]))+1)
+    G2tmt = [[] for _ in range(len(R))]
+    for b in R:
         if type=='sym':
             G2tmt[b].append(G2t.diagonal(offset=1).copy())
         elif type=='non-sym':
@@ -1055,7 +1058,7 @@ def _G2t2G2tmt(G2t, G2tmt, type):
         BIN_matrix = sparse.csr_array((np.ones(G2t.shape[0]), (np.arange(G2t.shape[0])//2, np.arange(G2t.shape[0]))), dtype=np.float32)
         G2t = dot_product_mkl(BIN_matrix, G2t)
         G2t = dot_product_mkl(BIN_matrix, G2t.T)
-        G2t= G2t.T/4
+        G2t = G2t.T/4
     
     return G2tmt
 
@@ -1240,44 +1243,43 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
     t0 = time.time()
     print('Computing sparse multitau G2t...')
 
-    G2tmt = [[] for i in range(sparse_depth)]
+    G2tmt = [np.zeros(0) for _ in range(sparse_depth+1)]
     N_sparseloops = Itp.shape[0]//2**sparse_depth
     Itp1 = Itp[:2**sparse_depth]
+
     for N in tqdm(range(N_sparseloops)):
         if N != 0:                Itp1 = Itp2
         if N != N_sparseloops-1:  Itp2 = Itp[(N+1)*2**sparse_depth:(N+2)*2**sparse_depth]
 
         # Compute central G2t
         G2t = _get_symG2t(Itp1)
-        G2tmt = _G2t2G2tmt(G2t, G2tmt, type='sym')
+        G2tmt_2add = _G2t2G2tmt(G2t, type='sym')
+        for i in range(len(G2tmt_2add)): G2tmt[i] = np.append(G2tmt[i], G2tmt_2add[i])
         
         # Compute shifted G2t
         if N != N_sparseloops-1:
             G2t = _get_nonsymG2t(Itp1, Itp2)
-            G2tmt = _G2t2G2tmt(G2t, G2tmt, type='non-sym')
-        
+            G2tmt_2add = _G2t2G2tmt(G2t, type='non-sym')
+            for i in range(len(G2tmt_2add)): G2tmt[i] = np.append(G2tmt[i], G2tmt_2add[i])
         #del G2t, Itp1, Itp2; gc.collect()  # for non-automatic memory management (but slower)
-
-    # Concatenate the G2tmt
-    for i in range(len(G2tmt)): G2tmt[i] = np.concat(G2tmt[i])
     print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
     ### DENSE COMPUTATION ###
     if dense_depth>sparse_depth:
         t0 = time.time()
         print('Computing dense multitau G2t...')
-        # BIN Itp by 2^sparse_depth
-        BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2**sparse_depth, np.arange(Itp.shape[0]))), dtype=np.float32)
+        # BIN Itp by 2^(sparse_depth+1)
+        BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2**(sparse_depth+1), np.arange(Itp.shape[0]))), dtype=np.float32)
         Itp = dot_product_mkl(BIN_matrix, Itp, dense=True)
 
         # recursevly compute G2t first diagonal and bin by a factor 2
-        for i in tqdm(range(dense_depth-sparse_depth)):
+        for i in tqdm(range(sparse_depth+1, dense_depth+1)):
             G2t = (Itp[:-1] * Itp[1:]).sum(axis=1)  # G2t = <Itp*Itp(t-shifted)>p
             norm = np.sqrt(Itp.shape[1])/Itp.sum(axis=1) # standard normalization
             G2t = G2t * norm[1:] * norm[:-1]
             G2tmt.append(np.array(G2t))
 
-            # Vin Itp by a factor 2
+            # Bin Itp by a factor 2
             BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2, np.arange(Itp.shape[0]))), dtype=np.float32)
             Itp = dot_product_mkl(BIN_matrix, Itp)
 
