@@ -9,7 +9,7 @@ Author: Fabio Brugnara
 
 
 ### IMPORT LIBRARIES ###
-import time, gc
+import time, gc, io, contextlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -1086,7 +1086,7 @@ def print_Nf_choices(Nf):
 
     # exp_max case
     Nf_red = Nf - 2**(exp_max)
-    df.loc[0] = [f'2**{exp_max}', exp_max, round(Nf_red/Nf*100,1), Nf_red]
+    df.loc[0] = [f'2**{exp_max}', exp_max-1, round(Nf_red/Nf*100,1), Nf_red]
 
     # next cases
     minus=1
@@ -1185,7 +1185,7 @@ def get_G2tmt_4dense(e4m_data, dense_depth, mask=None, Nfi=None, Nff=None):
 ##### GET multitau G2t 4 sparse data #####
 ##########################################
 
-def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, Nff=None):
+def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, Nfi=None, Nff=None, mask=None):
     """
     Compute the multitau (mt) G2t correlation from sparse e4m_data.
 
@@ -1219,7 +1219,7 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
     if (Nfi!=0) or (Nff!=e4m_data.shape[0]): Itp = e4m_data[Nfi:Nff]
     else : Itp = e4m_data
     if Itp.dtype != np.float32:
-        Itp = Itp.astype(np.float32) # convert to float32
+        Itp = Itp.astype(np.float32) # convert to float32!
         print('Converting to float32 ...')
     print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
@@ -1238,6 +1238,7 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
     ### CHECK PARAMS CONDIOTIONS ###
     if sparse_depth > dense_depth: raise ValueError('sparse_depth must be less/equal than dense_depth!')
     if Itp.shape[0]//2**dense_depth != Itp.shape[0]/2**dense_depth: raise ValueError('# of frames must be a multiple of 2^dense_depth!')
+    if Itp.shape[0]<2**sparse_depth: raise ValueError('sparse_depth must be less than the number of frames!')
 
     ### SPARSE COMPUTATION ###
     t0 = time.time()
@@ -1280,8 +1281,84 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, mask=None, Nfi=None, 
             G2tmt.append(np.array(G2t))
 
             # Bin Itp by a factor 2
-            BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2, np.arange(Itp.shape[0]))), dtype=np.float32)
-            Itp = dot_product_mkl(BIN_matrix, Itp)
+            if i != dense_depth:
+                BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2, np.arange(Itp.shape[0]))), dtype=np.float32)
+                Itp = dot_product_mkl(BIN_matrix, Itp)
+
+        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+
+    return G2tmt
+
+
+##########################################
+##### GET multitau G2t 4 sparse data #####
+##########################################
+
+def get_G2tmt_4sparse_bypartialloading(raw_folder, sample_name, Ndataset, Nscan, sparse_depth, dense_depth, Nfi, Nff, mask=None, n_jobs=1, Imaxth_high=5):
+  
+    import COSMICRAY_tools as COSMIC
+    if beamline == 'ID10': import ID10_tools as ID10
+
+    ### CHECK PARAMS CONDIOTIONS ###
+    if sparse_depth > dense_depth: raise ValueError('sparse_depth must be less/equal than dense_depth!')
+    if (Nff-Nfi)//2**dense_depth != (Nff-Nfi)/2**dense_depth: raise ValueError('# of frames must be a multiple of 2^dense_depth!')
+
+    ### SPARSE COMPUTATION ###
+    t0 = time.time()
+    print('Computing sparse multitau G2t...')
+
+    G2tmt = [np.zeros(0) for _ in range(sparse_depth+1)]
+    N_sparseloops = (Nff-Nfi)//2**sparse_depth
+    if beamline == 'ID10':
+        with contextlib.redirect_stdout(io.StringIO()):
+            Itp1 = ID10.load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=Nfi, Nff=Nfi+2**sparse_depth, load_mask=mask, n_jobs=n_jobs)
+            if Imaxth_high is not None: Itp1 = COSMIC.fast_gamma_filter(Itp1, Imaxth_high=Imaxth_high)
+    else:
+        raise ValueError('Beamline not implemented in this function!')
+    
+    Itp_dense = np.zeros(((Nff-Nfi)//2**(sparse_depth+1), Itp1.shape[1]), dtype=np.float32)
+    for N in tqdm(range(N_sparseloops)):
+        if N != 0:                Itp1 = Itp2
+        if N != N_sparseloops-1:
+            with contextlib.redirect_stdout(io.StringIO()):
+                Itp2 = ID10.load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=Nfi+(N+1)*2**sparse_depth, Nff=Nfi+(N+2)*2**sparse_depth, load_mask=mask, n_jobs=n_jobs)
+                if Imaxth_high is not None: Itp2 = COSMIC.fast_gamma_filter(Itp2, Imaxth_high=Imaxth_high)
+
+        # Compute central G2t
+        G2t = _get_symG2t(Itp1)
+        G2tmt_2add = _G2t2G2tmt(G2t, type='sym')
+        for i in range(len(G2tmt_2add)): G2tmt[i] = np.append(G2tmt[i], G2tmt_2add[i])
+        
+        # Compute shifted G2t
+        if N != N_sparseloops-1:
+            G2t = _get_nonsymG2t(Itp1, Itp2)
+            G2tmt_2add = _G2t2G2tmt(G2t, type='non-sym')
+            for i in range(len(G2tmt_2add)): G2tmt[i] = np.append(G2tmt[i], G2tmt_2add[i])
+
+        # Save the dense frame
+        if N%2== 0:
+            Itp_dense[N//2] = Itp1.sum(axis=0) + Itp2.sum(axis=0)
+
+        #del G2t, Itp1, Itp2; gc.collect()  # for non-automatic memory management (but slower)
+
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+
+    ### DENSE COMPUTATION ###
+    if dense_depth>sparse_depth:
+        t0 = time.time()
+        print('Computing dense multitau G2t...')
+
+        # recursevly compute G2t first diagonal and bin by a factor 2
+        for i in tqdm(range(sparse_depth+1, dense_depth+1)):
+            G2t = (Itp_dense[:-1] * Itp_dense[1:]).sum(axis=1)  # G2t = <Itp*Itp(t-shifted)>p
+            norm = np.sqrt(Itp_dense.shape[1])/Itp_dense.sum(axis=1) # standard normalization
+            G2t = G2t * norm[1:] * norm[:-1]
+            G2tmt.append(np.array(G2t))
+
+            # Bin Itp by a factor 2
+            if i != dense_depth:
+                BIN_matrix = sparse.csr_array((np.ones(Itp_dense.shape[0]), (np.arange(Itp_dense.shape[0])//2, np.arange(Itp_dense.shape[0]))), dtype=np.float32)
+                Itp_dense = dot_product_mkl(BIN_matrix, Itp_dense)
 
         print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
