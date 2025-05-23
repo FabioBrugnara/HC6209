@@ -93,6 +93,7 @@ def load_scan(raw_folder, sample_name, Ndataset, Nscan):
     # general
     scan['command']       = h5file[f"{Nscan}.1"]['title'][()].decode("utf-8")
     scan['start_time']    = h5file[f"{Nscan}.1"]['start_time'][()].decode("utf-8")
+    scan['num frames']   = h5file[f"{Nscan}.1"]['measurement']['eiger4m_v2_sparse_frame'].shape[0] - 1      ######### Addition for multitalu bypartialloading
     try: scan['end_time'] = h5file[f"{Nscan}.1"]['end_time'][()].decode("utf-8")
     except: pass
 
