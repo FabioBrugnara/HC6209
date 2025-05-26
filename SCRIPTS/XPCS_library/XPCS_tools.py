@@ -1404,7 +1404,55 @@ def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, Nfi=None, Nff=None, m
 ##########################################
 
 def get_G2tmt_4sparse_bypartialloading(raw_folder, sample_name, Ndataset, Nscan, sparse_depth, dense_depth, Nfi, Nff, mask=None, n_jobs=1, Imaxth_high=5):
-  
+    def get_G2tmt_4sparse_bypartialloading(
+        raw_folder, sample_name, Ndataset, Nscan, sparse_depth, dense_depth, Nfi, Nff,
+        mask=None, n_jobs=1, Imaxth_high=5
+    ):
+        """
+        Computes the multitau G2t correlation function for XPCS data using a sparse-by-partial-loading approach.
+        This function processes time-resolved X-ray Photon Correlation Spectroscopy (XPCS) data by partially loading
+        frames in a sparse manner, computing the multitau G2t correlation, and then recursively binning the data
+        for dense multitau computation. It is optimized for memory efficiency and parallel processing.
+        
+        Parameters
+        ----------
+        raw_folder : str
+            Path to the folder containing raw data files.
+        sample_name : str
+            Name of the sample to process.
+        Ndataset : int
+            Dataset index or identifier.
+        Nscan : int
+            Scan number or identifier.
+        sparse_depth : int
+            Depth of the sparse multitau computation (number of levels).
+        dense_depth : int
+            Depth of the dense multitau computation (must be >= sparse_depth).
+        Nfi : int
+            Index of the first frame to process (inclusive).
+        Nff : int
+            Index of the last frame to process (exclusive).
+        mask : array-like or None, optional
+            Mask to apply to the data (default is None, meaning no mask).
+        n_jobs : int, optional
+            Number of parallel jobs to use for data loading and processing (default is 1).
+        Imaxth_high : float or None, optional
+            Upper threshold for intensity filtering to remove cosmic rays (default is 5).
+            If None, no filtering is applied.
+        
+        Returns
+        -------
+        G2tmt : list of np.ndarray
+            List of multitau G2t correlation arrays, one for each level from sparse to dense depth.
+        
+        Raises
+        ------
+        ValueError
+            If `sparse_depth` is greater than `dense_depth`.
+            If the number of frames (`Nff - Nfi`) is not a multiple of 2**dense_depth.
+            If the specified beamline is not implemented.
+        """
+
     import COSMICRAY_tools as COSMIC
     if beamline == 'ID10': import ID10_tools as ID10
 
@@ -1425,7 +1473,7 @@ def get_G2tmt_4sparse_bypartialloading(raw_folder, sample_name, Ndataset, Nscan,
     else:
         raise ValueError('Beamline not implemented in this function!')
     
-    Itp_dense = np.zeros(((Nff-Nfi)//2**(sparse_depth+1), Itp1.shape[1]), dtype=np.float32)
+    Itp_dense = np.zeros(((Nff-Nfi)//2**(sparse_depth+1), Itp1.shape[1]), dtype=np.float32) # prepare dense frames array (frames binned by 2^(sparse_depth+1)
     for N in tqdm(range(N_sparseloops)):
         if N != 0:                Itp1 = Itp2
         if N != N_sparseloops-1:
@@ -1504,7 +1552,6 @@ def plot_G2tmt(G2tmt, itime, vmin, vmax, lower_mt=4, yscale='log2', filter_layer
     vlines : list or None, optional
         List of x-values at which to draw vertical dashed red lines. Default is None.
     """
-
 
     if borders: linewidth = .2
     else:       linewidth = 0
