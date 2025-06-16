@@ -1,0 +1,34 @@
+\indexentry{module@\spxentry{module}!XPCS\_tools@\spxentry{XPCS\_tools}|hyperpage}{1}
+\indexentry{XPCS\_tools@\spxentry{XPCS\_tools}!module@\spxentry{module}|hyperpage}{1}
+\indexentry{E2lambda() (in module XPCS\_tools)@\spxentry{E2lambda()}\spxextra{in module XPCS\_tools}|hyperpage}{3}
+\indexentry{Q2theta() (in module XPCS\_tools)@\spxentry{Q2theta()}\spxextra{in module XPCS\_tools}|hyperpage}{3}
+\indexentry{decorelation\_f() (in module XPCS\_tools)@\spxentry{decorelation\_f()}\spxextra{in module XPCS\_tools}|hyperpage}{3}
+\indexentry{gen\_Qmask() (in module XPCS\_tools)@\spxentry{gen\_Qmask()}\spxextra{in module XPCS\_tools}|hyperpage}{3}
+\indexentry{gen\_mask() (in module XPCS\_tools)@\spxentry{gen\_mask()}\spxextra{in module XPCS\_tools}|hyperpage}{3}
+\indexentry{gen\_plots4mask() (in module XPCS\_tools)@\spxentry{gen\_plots4mask()}\spxextra{in module XPCS\_tools}|hyperpage}{4}
+\indexentry{get\_G2t() (in module XPCS\_tools)@\spxentry{get\_G2t()}\spxextra{in module XPCS\_tools}|hyperpage}{4}
+\indexentry{get\_G2t\_bybunch() (in module XPCS\_tools)@\spxentry{get\_G2t\_bybunch()}\spxextra{in module XPCS\_tools}|hyperpage}{5}
+\indexentry{get\_It() (in module XPCS\_tools)@\spxentry{get\_It()}\spxextra{in module XPCS\_tools}|hyperpage}{5}
+\indexentry{get\_g2() (in module XPCS\_tools)@\spxentry{get\_g2()}\spxextra{in module XPCS\_tools}|hyperpage}{5}
+\indexentry{get\_g2\_mt() (in module XPCS\_tools)@\spxentry{get\_g2\_mt()}\spxextra{in module XPCS\_tools}|hyperpage}{6}
+\indexentry{lambda2E() (in module XPCS\_tools)@\spxentry{lambda2E()}\spxextra{in module XPCS\_tools}|hyperpage}{6}
+\indexentry{plot\_G2t() (in module XPCS\_tools)@\spxentry{plot\_G2t()}\spxextra{in module XPCS\_tools}|hyperpage}{6}
+\indexentry{plot\_XYprofile() (in module XPCS\_tools)@\spxentry{plot\_XYprofile()}\spxextra{in module XPCS\_tools}|hyperpage}{6}
+\indexentry{set\_beamline() (in module XPCS\_tools)@\spxentry{set\_beamline()}\spxextra{in module XPCS\_tools}|hyperpage}{7}
+\indexentry{set\_expvar() (in module XPCS\_tools)@\spxentry{set\_expvar()}\spxextra{in module XPCS\_tools}|hyperpage}{7}
+\indexentry{theta2Q() (in module XPCS\_tools)@\spxentry{theta2Q()}\spxextra{in module XPCS\_tools}|hyperpage}{7}
+\indexentry{module@\spxentry{module}!ID10\_tools@\spxentry{ID10\_tools}|hyperpage}{7}
+\indexentry{ID10\_tools@\spxentry{ID10\_tools}!module@\spxentry{module}|hyperpage}{7}
+\indexentry{convert\_dense\_e4m\_v1() (in module ID10\_tools)@\spxentry{convert\_dense\_e4m\_v1()}\spxextra{in module ID10\_tools}|hyperpage}{9}
+\indexentry{get\_Nbit\_v1() (in module ID10\_tools)@\spxentry{get\_Nbit\_v1()}\spxextra{in module ID10\_tools}|hyperpage}{9}
+\indexentry{load\_dense\_e4m() (in module ID10\_tools)@\spxentry{load\_dense\_e4m()}\spxextra{in module ID10\_tools}|hyperpage}{9}
+\indexentry{load\_pilatus() (in module ID10\_tools)@\spxentry{load\_pilatus()}\spxextra{in module ID10\_tools}|hyperpage}{10}
+\indexentry{load\_scan() (in module ID10\_tools)@\spxentry{load\_scan()}\spxextra{in module ID10\_tools}|hyperpage}{10}
+\indexentry{load\_sparse\_e4m() (in module ID10\_tools)@\spxentry{load\_sparse\_e4m()}\spxextra{in module ID10\_tools}|hyperpage}{11}
+\indexentry{save\_sparse\_e4m\_v1() (in module ID10\_tools)@\spxentry{save\_sparse\_e4m\_v1()}\spxextra{in module ID10\_tools}|hyperpage}{11}
+\indexentry{set\_version() (in module ID10\_tools)@\spxentry{set\_version()}\spxextra{in module ID10\_tools}|hyperpage}{11}
+\indexentry{module@\spxentry{module}!COSMICRAY\_tools@\spxentry{COSMICRAY\_tools}|hyperpage}{12}
+\indexentry{COSMICRAY\_tools@\spxentry{COSMICRAY\_tools}!module@\spxentry{module}|hyperpage}{12}
+\indexentry{cosmic\_filter() (in module COSMICRAY\_tools)@\spxentry{cosmic\_filter()}\spxextra{in module COSMICRAY\_tools}|hyperpage}{13}
+\indexentry{fast\_gamma\_filter() (in module COSMICRAY\_tools)@\spxentry{fast\_gamma\_filter()}\spxextra{in module COSMICRAY\_tools}|hyperpage}{13}
+\indexentry{set\_beamline() (in module COSMICRAY\_tools)@\spxentry{set\_beamline()}\spxextra{in module COSMICRAY\_tools}|hyperpage}{14}
