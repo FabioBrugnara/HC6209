@@ -215,8 +215,11 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
 
     # COMPUTE THE MEAN FLUX PER PX [ph/s/px]
     I_mean = np.ones(Npx)*of_value4plot
-    if load_mask is None: I_mean[mask]      = e4m_data[:,mask].sum(axis=0)/(itime*e4m_data.shape[0])
-    else:                 I_mean[load_mask] = e4m_data.sum(axis=0)        /(itime*e4m_data.shape[0])
+    if load_mask is None:
+        I_mean[mask]      = e4m_data[:,mask].sum(axis=0)/(itime*e4m_data.shape[0])
+    else:
+        I_mean[load_mask] = e4m_data.sum(axis=0)        /(itime*e4m_data.shape[0])
+        mask = load_mask
 
     # COMPUTE THE MAXIMUM COUNTS PER PX [ph/px] (only if needed)
     if (Imaxth_high is not None) or max_plots:
@@ -235,7 +238,11 @@ def gen_plots4mask(e4m_data, itime, Ith_high=None, Ith_low=None, Imaxth_high=Non
     # MEAN FLUX PER PX FIGURE
     plt.figure(figsize=(8,13))
     ax4 = plt.subplot(211)
-    im = ax4.imshow(I_mean.reshape(Nx, Ny), vmin=Ith_low, vmax=Ith_high, origin='lower')                                                                    # plot the mean flux per px 
+    if Ith_high is None: vmax = I_mean[mask].max()
+    else:                vmax = Ith_high
+    if Ith_low is None:  vmin = I_mean[mask].min()
+    else:                vmin = Ith_low
+    im = ax4.imshow(I_mean.reshape(Nx, Ny), vmin=vmin, vmax=vmax, origin='lower')                                                                    # plot the mean flux per px 
     plt.colorbar(im, ax=ax4)                                                                                                                                # add colorbar, labels, ...  
     ax4.set_title('Mean flux per px [ph/s/px]')                                                                                             
     ax4.set_xlabel('Y [px]')
@@ -1062,21 +1069,225 @@ def _get_nonsymG2t(Itp1, Itp2):
     ne.evaluate('G2t*Itr*Itc', out=G2t)
     return G2t
 
-def _G2t2G2tmt(G2t, type):
-    if type=='sym':       R = range(int(np.log2(G2t.shape[0])))
-    elif type=='non-sym': R = range(int(np.log2(G2t.shape[0]))+1)
-    G2tmt = [[] for _ in range(len(R))]
-    for b in R:
-        if type=='sym':
-            G2tmt[b].append(G2t.diagonal(offset=1).copy())
-        elif type=='non-sym':
-            G2tmt[b].append(np.array([G2t[-1,0]]))
+def _G2t2G2tmt(G2t, type, ch_depth):
+    '''
+    TO BE IMPROVED !!!
+    '''
+    ### CHECK ARGUMENTS CONDIOTIONS
 
-        BIN_matrix = sparse.csr_array((np.ones(G2t.shape[0]), (np.arange(G2t.shape[0])//2, np.arange(G2t.shape[0]))), dtype=np.float32)
-        G2t = dot_product_mkl(BIN_matrix, G2t)
-        G2t = dot_product_mkl(BIN_matrix, G2t.T)
-        G2t = G2t.T/4
+    # check if G2t is a square matrix
+    if G2t.shape[0] != G2t.shape[1]:
+        raise ValueError('G2t must be a square matrix! Current shape is '+str(G2t.shape[0])+'x'+str(G2t.shape[1])+'!')
+
+    # check if G2t shape is a power of 2
+    if int(np.log2(G2t.shape[0]))!=np.log2(G2t.shape[0]):
+        raise ValueError('G2t must be a square matrix with size 2^n (n integer)! Current size is '+str(G2t.shape[0])+'x'+str(G2t.shape[1])+'!')
     
+    # check ch_depth minimum value
+    if ch_depth<1:
+        raise ValueError('ch_depth must be greater than or equal to 1! Otherwise you are working with less then 2 channels (the 0-channel compute the variance)!')
+
+    # check if log2(G2t.shape[0]) is greater than or equal to ch_depth
+    if np.log2(G2t.shape[0])<=ch_depth:
+        print(np.log2(G2t.shape[0]), ch_depth)
+        raise ValueError('log2(G2t.shape[0]) must be greater than or equal to ch_depth! Current log2(G2t.shape[0]) is '+str(int(np.log2(G2t.shape[0])))+' and ch_depth is '+str(ch_depth)+'!')
+
+    # prepare the G2tmt list & Correlators & Channels ranges
+    G2tmt = [[] for i in range(int(np.log2(G2t.shape[0])) - ch_depth + 1)]
+    Correlators = range(len(G2tmt))
+    Channels    = range(2**ch_depth)
+
+    # Compute the G2tmt for each correlator and channel
+    for corr in Correlators:
+        for ch in Channels:
+            if (ch==0) or ((corr>0) and (ch<2**ch_depth//2)):
+                G2tmt[corr].append(np.array([]))
+            elif type=='sym':
+                G2tmt[corr].append(G2t.diagonal(offset=ch).copy())
+            elif type=='non-sym':
+                G2tmt[corr].append(G2t.diagonal(offset=-G2t.shape[0]+ch).copy())
+
+        # Bin G2tmt by a factor of 2, This can be improved !!!
+        if corr!= Correlators[-1]:
+            BIN_matrix = sparse.csr_array((np.ones(G2t.shape[0]), (np.arange(G2t.shape[0])//2, np.arange(G2t.shape[0]))), dtype=np.float32)
+            G2t = dot_product_mkl(BIN_matrix, G2t)
+            G2t = dot_product_mkl(BIN_matrix, G2t.T)
+            G2t = G2t.T/4
+
+    return G2tmt
+
+
+##########################################
+##### GET multitau G2t 4 sparse data #####
+##########################################
+
+def get_G2tmt_4sparse(e4m_data, sparse_depth: int, ch_depth: int=4, Nfi: int=None, Nff: int=None, mask=None, keep_symmetric = False):
+    """
+    Compute the multitau (mt) G2t correlation from sparse e4m_data.
+
+    Parameters
+    ----------
+    e4m_data : sparse.csr_matrix
+        Sparse e4m_data of shape (Nf, Npx).
+    sparse_depth : int
+        The number of sparse multitau levels.
+    mask : np.ndarray, optional
+        Boolean mask to select pixels for the computation. If None, all pixels are used.
+    Nfi : int, optional
+        Initial frame to consider (inclusive).
+    Nff : int, optional
+        Final frame to consider (exclusive).
+    Nchannels : int, optional
+        Number of channels to consider for the computation. Default is 4.
+
+    Returns
+    -------
+    G2tmt : list of np.ndarray
+        List containing the sparse multitau G2t correlation arrays for each level.
+    """
+    
+    ### DEFAULT VALUES
+    if Nfi == None: Nfi = 0
+    # if Nff == None, set it t.c. Nff-Nfi is a multiple of 2**sparse_depth
+    if Nff == None: 
+        Nff = (e4m_data.shape[0]-Nfi) // 2**sparse_depth * 2**sparse_depth + Nfi
+        print(f'Nff set to {Nff} => (Nff-Nfi) = {(e4m_data.shape[0]-Nfi) // 2**sparse_depth}*2^sparse_depth, thrown frames = {(e4m_data.shape[0]-Nfi-(Nff-Nfi))} ({round((e4m_data.shape[0]-Nfi-(Nff-Nfi))/(e4m_data.shape[0]-Nfi)*100, 2)}%)')
+
+    ### LOAD DATA
+    t0 = time.time()
+    print('Loading frames ...')
+    if (Nfi!=0) or (Nff!=e4m_data.shape[0]): Itp = e4m_data[Nfi:Nff]
+    else : Itp = e4m_data
+    if Itp.dtype != np.float32:
+        Itp = Itp.astype(np.float32) # convert to float32!
+        print('and converting to float32 ...')
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+
+    ### MASK DATA
+    if mask is not None:
+        t0 = time.time()
+        print('Masking data ...')
+        Itp = Itp[:,mask]
+        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+
+    ### PRINT DATA INFO
+    print('\t | '+str(Itp.shape[0])+' frames X '+str(Itp.shape[1])+' pixels')
+    print('\t | sparsity = {:.2e}'.format(Itp.data.size/(Itp.shape[0]*Itp.shape[1])))
+    print('\t | memory usage (sparse.csr_array @ '+str(Itp.dtype)+') =', round((Itp.data.nbytes+Itp.indices.nbytes+Itp.indptr.nbytes)/1024**3,3), 'GB')
+
+    ### CHECK ARGUMENTS CONDIOTIONS
+
+    # check ch_depth minimum value
+    if ch_depth<1:
+        raise ValueError('ch_depth must be greater than or equal to 1! Otherwise you are working with less then 2 channels (the 0-channel compute the variance)!')
+
+    # check if Itp.shape[0] is a multiple of sparse_depth
+    if Itp.shape[0]/2**sparse_depth != int(Itp.shape[0]/2**sparse_depth):
+        raise ValueError('Itp.shape[0] must be a multiple of 2**sparse_depth! Current Itp.shape[0] is '+str(Itp.shape[0])+' and sparse_depth is '+str(sparse_depth)+'.')
+    
+    # check if Itp.shape[0] is greater than or equal to 2**(sparse_depth-ch_depth)
+    if Itp.shape[0] <2**(sparse_depth-ch_depth):
+        raise ValueError('Itp.shape[0] must be greater than or equal to 2**(sparse_depth-ch_depth)! Current Itp.shape[0] is '+str(Itp.shape[0])+' and sparse_depth is '+str(sparse_depth)+' and ch_depth is '+str(ch_depth)+'.')
+    
+
+    ############################ SPARSE COMPUTATION ############################
+    t0 = time.time()
+    print('Computing sparse multitau G2t...')
+
+    # Prepare the # of sparse loops, and channels and correlators ranges
+    N_sparseloops = Itp.shape[0]//2**sparse_depth
+    Correlators = range(sparse_depth - ch_depth + 1) # we have sparse_depth-ch_depth+1 correlators (from 2**0 up to 2**(sparse_depth-ch_depth))
+    Channels = range(2**ch_depth)
+
+    # Prepare the G2tmt object, Itp_dense array
+    G2tmt = [[np.array([]) for ch in Channels] for corr in Correlators]
+    # See below the rison that, for each sparse loop, we save 2**(ch_depth-1) frames.
+    Itp_dense = np.zeros((N_sparseloops*2**(ch_depth-1), Itp.shape[1]), dtype=np.float32)
+    
+    Itp1 = Itp[:2**sparse_depth]
+    Itp2 = Itp[2**sparse_depth:2**(sparse_depth+1)]
+    for N in tqdm(range(N_sparseloops)):
+
+        # Bin and save the dense frame for dense computation
+        # Here, we compute within the sparse loop up to the 2**(sparse_depth-ch_depth) correlator.
+        # Thus, we remain, for each loop, with 2**ch_depth frames, but already analized at this level.
+        # We thus have to bin by a factor 2**(ch_depth-1)!
+        for ch in Channels:
+            if ch%2 == 0:
+                if N%2 == 0: Itp_dense[2**(ch_depth-1)*N+ch//2] = Itp1[ch * 2**(sparse_depth-ch_depth): (ch+2) * 2**(sparse_depth-ch_depth)].sum(axis=0)
+                else:        Itp_dense[2**(ch_depth-1)*N+ch//2] = Itp2[ch * 2**(sparse_depth-ch_depth): (ch+2) * 2**(sparse_depth-ch_depth)].sum(axis=0)
+
+        # Compute central G2t
+        if N%2 == 0: G2t = _get_symG2t(Itp1)
+        else:        G2t = _get_symG2t(Itp2)
+
+        # and transform central G2t to G2tmt
+        G2tmt_2add = _G2t2G2tmt(G2t, type='sym', ch_depth=ch_depth)
+
+        # and ppend to G2tmt
+        for corr in Correlators:
+            for ch in Channels:
+                G2tmt[corr][ch] = np.append(G2tmt[corr][ch], G2tmt_2add[corr][ch])
+        
+        # Compute shifted G2t (except for the last loop)
+        if N != N_sparseloops-1:
+
+            if N%2 == 0: G2t = _get_nonsymG2t(Itp1, Itp2)
+            else:        G2t = _get_nonsymG2t(Itp2, Itp1)
+
+            # and transform shifted G2t to G2tmt
+            G2tmt_2add = _G2t2G2tmt(G2t, type='non-sym', ch_depth=ch_depth)
+
+            # and append to G2tmt
+            for corr in Correlators:
+                for ch in Channels:
+                    G2tmt[corr][ch] = np.append(G2tmt[corr][ch], G2tmt_2add[corr][ch])
+
+            # Load next Itp1 or Itp2
+            if N%2 == 0: Itp1 = Itp[(N+2)*2**sparse_depth:(N+3)*2**sparse_depth]
+            else:        Itp2 = Itp[(N+2)*2**sparse_depth:(N+3)*2**sparse_depth]
+  
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+
+
+    ############################ DENSE COMPUTATION ############################
+    t0 = time.time()
+    print('Computing dense multitau G2t...') 
+
+    while Itp_dense.shape[0] > 2**(ch_depth):
+        print(f"\t-> computing channels on {Itp_dense.shape[0]} frames ...")
+
+        # add correlator to G2tmt
+        G2tmt.append([])
+
+        # compute the normalization of Itp_dense
+        norm = np.divide(np.sqrt(Itp_dense.shape[1]), Itp_dense.sum(axis=1), dtype=np.float32)
+        
+        # compute the multitau correlation for each channel, and directly append to G2tmt
+        for ch in Channels:
+
+            # skip the first half of the channels
+            if ch< 2**ch_depth//2:
+                G2tmt[-1].append(np.array([]))
+
+            # for the second half of the channels
+            else:
+                # G2t_diag = <Itp*Itp(t-shifted)>p
+                G2t_diag = (Itp_dense[:-ch] * Itp_dense[ch:]).sum(axis=1)   # Slow!!!
+                G2tmt[-1].append(np.array(G2t_diag * norm[ch:] * norm[:-ch]))  
+
+        # Bin Itp_dense by a factor 2
+        if Itp_dense.shape[0]/2 == Itp_dense.shape[0] // 2:
+            Itp_dense = np.sum(Itp_dense.reshape((Itp_dense.shape[0]//2, 2, Itp_dense.shape[1])), axis=1)
+        else:
+            if not keep_symmetric:
+                Itp_dense = Itp_dense[0:Itp_dense.shape[0]//2*2]  # keep only the even frames
+                Itp_dense = np.sum(Itp_dense.reshape((Itp_dense.shape[0]//2, 2, Itp_dense.shape[1])), axis=1)
+            else:
+                break
+    
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+
     return G2tmt
 
 
@@ -1084,9 +1295,9 @@ def _G2t2G2tmt(G2t, type):
 ##### PRINT REDUCED Nf CHOICES #####
 ####################################
 
-def print_Nf_choices(Nf):
+def print_Nf_choices(Nf: int):
     """
-    Print the possible choices for reduced Nf, dense depth, and thrown frames.
+    Print the possible choices for reduced Nf, sparse depth, and thrown frames.
     This function computes the possible values of Nf that can be used for dense depth
     and the number of thrown frames based on the input Nf.
 
@@ -1099,343 +1310,37 @@ def print_Nf_choices(Nf):
     print(f'       Nf = {Nf}    =>    log2(Nf) = {round(np.log2(Nf),2)}')
     print('----------------------------------------------------')
     exp_max = int(np.log2(Nf))
-    df = pd.DataFrame(columns=['reduced Nf', 'dense depth (2^x)', 'thrown frames %', 'thrown frames'])
+    df = pd.DataFrame(columns=['red Nf', 'sparse depth', 'subG2t mem (GBy)','thrown frames %', 'thrown frames'])
 
     # exp_max case
     Nf_red = Nf - 2**(exp_max)
-    df.loc[0] = [f'2**{exp_max}', exp_max-1, round(Nf_red/Nf*100,1), Nf_red]
+    df.loc[0] = [f'2**{exp_max}', exp_max, round(2**(2*exp_max)*4/1024**3,1), round(Nf_red/Nf*100,1), Nf_red]
 
     # next cases
     minus=1
-    for minus in range(1, exp_max//2):
+    for minus in range(1, exp_max-11):
         n = int(Nf/(2**(exp_max-minus)))
         Nf_red = Nf - n*2**(exp_max-minus)
-        if df.iloc[-1]['thrown frames'] > Nf_red:
-            df.loc[len(df)] = [f'{n}*2**{exp_max-minus}', exp_max-1-minus, round(Nf_red/Nf*100), Nf_red]
+        #if df.iloc[-1]['thrown frames'] > Nf_red:
+        df.loc[len(df)] = [f'{n}*2**{exp_max-minus}', exp_max-minus, round(2**(2*(exp_max-minus))*4/1024**3,1), round(Nf_red/Nf*100,1), Nf_red]
 
-    print(df)
+    display(df)
     print('----------------------------------------------------')
 
 
-#########################################
-##### GET multitau G2t 4 dense data #####
-#########################################
-
-def get_G2tmt_4dense(e4m_data, dense_depth, mask=None, Nfi=None, Nff=None):
-    """
-    Compute the multitau (mt) G2t correlation from dense e4m_data.
-
-    Parameters
-    ----------
-    e4m_data : np.ndarray
-        Dense e4m_data of shape (Nf, Npx).
-    dense_depth : int
-        The number of dense multitau levels.
-    mask : np.ndarray, optional
-        Boolean or index mask to select pixels for the computation. If None, all pixels are used.
-    Nfi : int, optional
-        Initial frame to consider (inclusive).
-    Nff : int, optional
-        Final frame to consider (exclusive).
-
-    Returns
-    -------
-    G2tmt : list of np.ndarray
-        List containing the dense multitau G2t correlation arrays for each level.
-
-    Notes
-    -----
-    - The function applies a mask if provided, and processes the data in float32 precision.
-    - At each dense multitau level, the data is binned by a factor of 2.
-    - The function is currently marked as untested.
-    """
-    
-
-    print('WARNING: the function is still not tested!')
-
-    if Nfi == None: Nfi = 0
-    if Nff == None: Nff = e4m_data.shape[0]
-
-    #  LOAD DATA
-    t0 = time.time()
-    print('Loading frames ...')
-    if (Nfi!=0) or (Nff!=e4m_data.shape[0]): Itp = e4m_data[Nfi:Nff]
-    else : Itp = e4m_data
-    if Itp.dtype != np.float32: Itp = Itp.astype(np.float32) # CONVERT TO float32
-
-    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    #  MASK DATA
-    t0 = time.time()
-    if mask is not None:
-        print('Masking data ...')
-        Itp = Itp[:,mask]
-        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-        print('\t | '+str(Itp.shape[0])+' frames X '+str(Itp.shape[1])+' pixels')
-        print('\t | memory usage (np.array @ '+str(Itp.dtype)+') =', round(Itp.nbytes/1024**3,3), 'GB')
-
-    ### CHECK PARAMS CONDIOTIONS ###
-    if Itp.shape[0]//2**dense_depth != Itp.shape[0]/2**dense_depth: raise ValueError('# of frames must be a multiple of 2^dense_depth!')
-
-    ### DENSE COMPUTATION ###
-
-    t0 = time.time()
-    print('Computing dense multitau G2t...')
-    G2tmt = []
-    # recurevly compute G2t first diagonal and bin by a factor 2
-    for i in tqdm(range(dense_depth)):
-        G2t = (Itp[:-1] * Itp[1:]).sum(axis=1)  # G2t = <Itp*Itp(t-shifted)>p
-        norm = np.sqrt(Itp.shape[1])/Itp.sum(axis=1) # standard normalization
-        G2t = G2t * norm[1:] * norm[:-1]
-        G2tmt.append(np.array(G2t))
-
-        # bin Itp by a factor 2
-        BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//2, np.arange(Itp.shape[0]))), dtype=np.float32)
-        Itp = dot_product_mkl(BIN_matrix, Itp, cast=True)
-        
-    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    return G2tmt
-
-
 ##########################################
 ##### GET multitau G2t 4 sparse data #####
 ##########################################
 
-def get_G2tmt_4sparse(e4m_data, sparse_depth, dense_depth, Nfi=None, Nff=None, mask=None):
-    """
-    Compute the multitau (mt) G2t correlation from sparse e4m_data.
-
-    Parameters
-    ----------
-    e4m_data : sparse.csr_matrix
-        Sparse e4m_data of shape (Nf, Npx).
-    sparse_depth : int
-        The number of sparse multitau levels.
-    dense_depth : int
-        The number of dense multitau levels.
-    mask : np.ndarray, optional
-        Boolean mask to select pixels for the computation. If None, all pixels are used.
-    Nfi : int, optional
-        Initial frame to consider (inclusive).
-    Nff : int, optional
-        Final frame to consider (exclusive).
-
-    Returns
-    -------
-    G2tmt : list of np.ndarray
-        List containing the sparse multitau G2t correlation arrays for each level.
-    """
-    
-    # DEFAULT VALUES
-    if Nfi == None: Nfi = 0
-    if Nff == None: Nff = e4m_data.shape[0]
-
-    #  LOAD DATA
-    t0 = time.time()
-    print('Loading frames ...')
-    if (Nfi!=0) or (Nff!=e4m_data.shape[0]): Itp = e4m_data[Nfi:Nff]
-    else : Itp = e4m_data
-    if Itp.dtype != np.float32:
-        Itp = Itp.astype(np.float32) # convert to float32!
-        print('Converting to float32 ...')
-    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    #  MASK DATA
-    if mask is not None:
-        t0 = time.time()
-        print('Masking data ...')
-        Itp = Itp[:,mask]
-        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    # PRINT DATA INFO
-    print('\t | '+str(Itp.shape[0])+' frames X '+str(Itp.shape[1])+' pixels')
-    print('\t | sparsity = {:.2e}'.format(Itp.data.size/(Itp.shape[0]*Itp.shape[1])))
-    print('\t | memory usage (sparse.csr_array @ '+str(Itp.dtype)+') =', round((Itp.data.nbytes+Itp.indices.nbytes+Itp.indptr.nbytes)/1024**3,3), 'GB')
-
-    ### CHECK PARAMS CONDIOTIONS ###
-    if sparse_depth > dense_depth: raise ValueError('sparse_depth must be less/equal than dense_depth!')
-    if Itp.shape[0]//2**dense_depth != Itp.shape[0]/2**dense_depth: raise ValueError('# of frames must be a multiple of 2^dense_depth!')
-    if Itp.shape[0]<2**sparse_depth: raise ValueError('sparse_depth must be less than the number of frames!')
-
-    ### SPARSE COMPUTATION ###
-    t0 = time.time()
-    print('Computing sparse multitau G2t...')
-
-    G2tmt = [np.zeros(0) for _ in range(sparse_depth+1)]
-    N_sparseloops = Itp.shape[0]//2**sparse_depth
-    Itp1 = Itp[:2**sparse_depth]
-
-    Itp_dense = np.zeros(((Nff-Nfi)//2**(sparse_depth+1), Itp1.shape[1]), dtype=np.float32)
-    for N in tqdm(range(N_sparseloops)):
-        if N != 0:                Itp1 = Itp2
-        if N != N_sparseloops-1:  Itp2 = Itp[(N+1)*2**sparse_depth:(N+2)*2**sparse_depth]
-
-        # Compute central G2t
-        G2t = _get_symG2t(Itp1)
-        G2tmt_2add = _G2t2G2tmt(G2t, type='sym')
-        for i in range(len(G2tmt_2add)): G2tmt[i] = np.append(G2tmt[i], G2tmt_2add[i])
-        
-        # Compute shifted G2t
-        if N != N_sparseloops-1:
-            G2t = _get_nonsymG2t(Itp1, Itp2)
-            G2tmt_2add = _G2t2G2tmt(G2t, type='non-sym')
-            for i in range(len(G2tmt_2add)): G2tmt[i] = np.append(G2tmt[i], G2tmt_2add[i])
-     
-        # Save the dense frame
-        if N%2== 0:
-            Itp_dense[N//2] = Itp1.sum(axis=0) + Itp2.sum(axis=0)
-
-        #del G2t, Itp1, Itp2; gc.collect()  # for non-automatic memory management (but slower)
-    #del Itp; gc.collect()
-    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    ### DENSE COMPUTATION ###
-    if dense_depth>sparse_depth:
-        t0 = time.time()
-        print('Computing dense multitau G2t...')
-
-        # recursevly compute G2t first diagonal and bin by a factor 2
-        for i in tqdm(range(sparse_depth+1, dense_depth+1)):
-
-            G2t = (Itp_dense[:-1] * Itp_dense[1:]).sum(axis=1)  # G2t = <Itp*Itp(t-shifted)>p
-            norm = np.divide(np.sqrt(Itp_dense.shape[1]), Itp_dense.sum(axis=1), dtype=np.float32)
-            G2tmt.append(np.array(G2t * norm[1:] * norm[:-1]))
-
-            # Bin Itp by a factor 2
-            if i != dense_depth:
-                #BIN_matrix = sparse.csr_array((np.ones(Itp_dense.shape[0]), (np.arange(Itp_dense.shape[0])//2, np.arange(Itp_dense.shape[0]))), dtype=np.float32)
-                #Itp_dense = dot_product_mkl(BIN_matrix, Itp_dense)            
-                Itp_dense = np.sum(Itp_dense.reshape((Itp_dense.shape[0]//2, 2, Itp_dense.shape[1])), axis=1)
-        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    return G2tmt
-
-
-
-##########################################
-##### GET multitau G2t 4 sparse data #####
-##########################################
-
-def get_G2tmt_4sparse_bypartialloading(raw_folder, sample_name, Ndataset, Nscan, sparse_depth, dense_depth, Nfi, Nff, mask=None, n_jobs=1, Imaxth_high=5):
-    """
-    Computes the multitau G2t correlation function for XPCS data using a sparse-by-partial-loading approach.
-    This function processes time-resolved X-ray Photon Correlation Spectroscopy (XPCS) data by partially loading
-    frames in a sparse manner, computing the multitau G2t correlation, and then recursively binning the data
-    for dense multitau computation. It is optimized for memory efficiency and parallel processing.
-    
-    Parameters
-    ----------
-    raw_folder : str
-        Path to the folder containing raw data files.
-    sample_name : str
-        Name of the sample to process.
-    Ndataset : int
-        Dataset index or identifier.
-    Nscan : int
-        Scan number or identifier.
-    sparse_depth : int
-        Depth of the sparse multitau computation (number of levels).
-    dense_depth : int
-        Depth of the dense multitau computation (must be >= sparse_depth).
-    Nfi : int
-        Index of the first frame to process (inclusive).
-    Nff : int
-        Index of the last frame to process (exclusive).
-    mask : array-like or None, optional
-        Mask to apply to the data (default is None, meaning no mask).
-    n_jobs : int, optional
-        Number of parallel jobs to use for data loading and processing (default is 1).
-    Imaxth_high : float or None, optional
-        Upper threshold for intensity filtering to remove cosmic rays (default is 5).
-        If None, no filtering is applied.
-    
-    Returns
-    -------
-    G2tmt : list of np.ndarray
-        List of multitau G2t correlation arrays, one for each level from sparse to dense depth.
-    
-    Raises
-    ------
-    ValueError
-        If `sparse_depth` is greater than `dense_depth`.
-        If the number of frames (`Nff - Nfi`) is not a multiple of 2**dense_depth.
-        If the specified beamline is not implemented.
-    """
-
-    import COSMICRAYtools as COSMIC
-    if beamline == 'ID10': import ID10tools as ID10
-
-    ### CHECK PARAMS CONDIOTIONS ###
-    if sparse_depth > dense_depth: raise ValueError('sparse_depth must be less/equal than dense_depth!')
-    if (Nff-Nfi)//2**dense_depth != (Nff-Nfi)/2**dense_depth: raise ValueError('# of frames must be a multiple of 2^dense_depth!')
-
-    ### SPARSE COMPUTATION ###
-    t0 = time.time()
-    print('Computing sparse multitau G2t...')
-
-    G2tmt = [np.zeros(0) for _ in range(sparse_depth+1)]
-    N_sparseloops = (Nff-Nfi)//2**sparse_depth
-    if beamline == 'ID10':
-        with contextlib.redirect_stdout(io.StringIO()):
-            Itp1 = ID10.load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=Nfi, Nff=Nfi+2**sparse_depth, load_mask=mask, n_jobs=n_jobs)
-            if Imaxth_high is not None: Itp1 = COSMIC.fast_gamma_filter(Itp1, Imaxth_high=Imaxth_high)
-    else:
-        raise ValueError('Beamline not implemented in this function!')
-    
-    Itp_dense = np.zeros(((Nff-Nfi)//2**(sparse_depth+1), Itp1.shape[1]), dtype=np.float32) # prepare dense frames array (frames binned by 2^(sparse_depth+1)
-    for N in tqdm(range(N_sparseloops)):
-        if N != 0:                Itp1 = Itp2
-        if N != N_sparseloops-1:
-            with contextlib.redirect_stdout(io.StringIO()):
-                Itp2 = ID10.load_sparse_e4m(raw_folder, sample_name, Ndataset, Nscan, Nfi=Nfi+(N+1)*2**sparse_depth, Nff=Nfi+(N+2)*2**sparse_depth, load_mask=mask, n_jobs=n_jobs)
-                if Imaxth_high is not None: Itp2 = COSMIC.fast_gamma_filter(Itp2, Imaxth_high=Imaxth_high)
-
-        # Compute central G2t
-        G2t = _get_symG2t(Itp1)
-        G2tmt_2add = _G2t2G2tmt(G2t, type='sym')
-        for i in range(len(G2tmt_2add)): G2tmt[i] = np.append(G2tmt[i], G2tmt_2add[i])
-        
-        # Compute shifted G2t
-        if N != N_sparseloops-1:
-            G2t = _get_nonsymG2t(Itp1, Itp2)
-            G2tmt_2add = _G2t2G2tmt(G2t, type='non-sym')
-            for i in range(len(G2tmt_2add)): G2tmt[i] = np.append(G2tmt[i], G2tmt_2add[i])
-
-        # Save the dense frame
-        if N%2== 0:
-            Itp_dense[N//2] = Itp1.sum(axis=0) + Itp2.sum(axis=0)
-
-        #del G2t, Itp1, Itp2; gc.collect()  # for non-automatic memory management (but slower)
-
-    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    ### DENSE COMPUTATION ###
-    if dense_depth>sparse_depth:
-        t0 = time.time()
-        print('Computing dense multitau G2t...')
-
-        # recursevly compute G2t first diagonal and bin by a factor 2
-        for i in tqdm(range(sparse_depth+1, dense_depth+1)):
-            G2t = (Itp_dense[:-1] * Itp_dense[1:]).sum(axis=1)  # G2t = <Itp*Itp(t-shifted)>p
-            norm = np.divide(np.sqrt(Itp_dense.shape[1]), Itp_dense.sum(axis=1), dtype=np.float32)
-            G2tmt.append(np.array(G2t * norm[1:] * norm[:-1]))
-
-            # Bin Itp by a factor 2
-            if i != dense_depth:
-                #BIN_matrix = sparse.csr_array((np.ones(Itp_dense.shape[0]), (np.arange(Itp_dense.shape[0])//2, np.arange(Itp_dense.shape[0]))), dtype=np.float32)
-                #Itp_dense = dot_product_mkl(BIN_matrix, Itp_dense)
-                Itp_dense = np.sum(Itp_dense.reshape((Itp_dense.shape[0]//2, 2, Itp_dense.shape[1])), axis=1)
-
-        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    return G2tmt
+# To be implemenmted!!!
 
 #############################
 ##### PLOT multitau G2t #####
 #############################
 
-def plot_G2tmt(G2tmt, itime, vmin, vmax, lower_mt=4, yscale='log2', filter_layer=None, borders=False, xlims=None, vlines=None):
+from scipy.ndimage import gaussian_filter, gaussian_filter1d  
+
+def plot_G2tmt(G2tmt, itime, vmin, vmax, lower_corr=4, upper_corr=None, yscale='log', filter_layer=None, borders=False, xlims=None, vlines=None):
     """
     Plot a multi-tau correlation matrix (G2tmt) using broken bar plot.
 
@@ -1466,53 +1371,58 @@ def plot_G2tmt(G2tmt, itime, vmin, vmax, lower_mt=4, yscale='log2', filter_layer
     if borders: linewidth = .2
     else:       linewidth = 0
 
+    if upper_corr is None: N_corr = len(G2tmt)
+    else:                  N_corr = upper_corr
+    N_ch = len(G2tmt[0])
+
     plt.figure(figsize=(10,5))
-    T = (G2tmt[0].shape[0]+1) * itime
-    for b in range(lower_mt, len(G2tmt)):
-        if G2tmt[b].size>1:
-            xmin = np.arange(2**b*2, (G2tmt[0].shape[0]+1), 2**b)*itime - itime*2**b/2
-            xmin = np.insert(xmin, 0, 0)
-            xrange = np.ones(G2tmt[b].size-2) * itime*2**b
-            xrange = np.insert(xrange, 0, itime*2**b*3/2)
-            xrange = np.insert(xrange, xrange.size, itime*2**b*3/2)
-        else:
-            xmin = np.array([0])
-            xrange = np.array([T])
+    T = (G2tmt[0][1].shape[0]+1) * itime
 
-        xranges = [(xmin[i],xrange[i]) for i in range(len(xmin))]
+    for corr in range(lower_corr, N_corr):
+        itime_corr = itime * 2**corr
+        for ch in range(N_ch):
+            if (ch==0) or ((corr>0) and (ch<N_ch//2)):
+                pass
+            else:
+                x = np.arange(G2tmt[corr][ch].size)*itime_corr + (1+ch)*itime_corr/2
+                dx = itime_corr
+                y = np.ones(G2tmt[corr][ch].size) * itime_corr * ch # lower point
+                dy = itime_corr
 
-        if (yscale=='log') or (yscale=='lin'): yrange = (2**b*itime, 2**b*itime)
-        elif yscale=='log2':                   yrange = (b, 1)
+                xranges = [(x[i]-dx/2, dx) for i in range(len(x))]  # x ranges for each bar
+                yrange = (y[0], dy)  # y range for the bars
 
-        if vlines != None:
-            for vline in vlines:
-                plt.axvline(x=vline, color='red', linestyle='--', linewidth=1)
+                if (filter_layer == None) or (corr >= filter_layer):
+                    BB = plt.broken_barh(xranges, yrange, array=G2tmt[corr][ch], cmap='viridis', clim=(vmin, vmax), edgecolor='black', linewidth=linewidth)
+                else:
+                    filtered_data = gaussian_filter1d(G2tmt[corr][ch], 2**(filter_layer-corr), mode='nearest')
+                    BB = plt.broken_barh(xranges, yrange, array=filtered_data, cmap='viridis', clim=(vmin, vmax), edgecolor='black', linewidth=linewidth)
+
+    if vlines != None:
+        for vline in vlines:
+            plt.axvline(x=vline, color='red', linestyle='--', linewidth=1)
         
-        if (filter_layer == None) or (b>=filter_layer): BB = plt.broken_barh(xranges, yrange, array=G2tmt[b],                                                         cmap='viridis', clim=(vmin, vmax), edgecolor='black', linewidth=linewidth)
-        else:                                           BB = plt.broken_barh(xranges, yrange, array=gaussian_filter1d(G2tmt[b], 2**(filter_layer-b), mode='nearest'), cmap='viridis', clim=(vmin, vmax), edgecolor='black', linewidth=linewidth)
 
-    plt.xlabel('$t_0$ [s]')                                                                 # x-axis label
-    if xlims==None: plt.xlim(0, T)                                                          # x-axis limits (default)
-    else:           plt.xlim(xlims)                                                         # or user defined
-    if (yscale=='log') or (yscale=='lin'): plt.ylabel('$\\Delta T$ [s]')                    # y-axis label for linear and log scale
-    elif yscale=='log2':                   plt.ylabel('$\\Delta T$ [$\\log_2$]')            # or log2 scale
-    if (yscale=='log') or (yscale=='lin'): plt.ylim(2**lower_mt*itime, 2**len(G2tmt)*itime) # y-axis limits for linear and log scale
-    elif yscale=='log2':                   plt.ylim(lower_mt, len(G2tmt))                   # or log2 scale
-    if yscale == 'log':                    plt.yscale('log')                                # set y-axis to log scale (if yscale is log)
-    plt.colorbar(BB)                                                                        # colorbar      
+    plt.xlabel('$t_0$ [s]')                                                                 
+    plt.ylabel('$\\Delta T$ [s]')
+
+    if xlims==None: plt.xlim(0, T)                                                        
+    else:           plt.xlim(xlims)
+    if yscale == 'log': plt.yscale('log')                               
+    plt.colorbar(BB)
     plt.tight_layout(); plt.show()
 
 
 #############################
 ##### GET TIMES 4 G2tmt #####
 #############################
-
+'''
 def get_t_G2tmt(itime, G2tmt):
     return [np.arange(itime*2**b, (G2tmt[0].shape[0]+1) * itime, itime*2**b) for b in range(len(G2tmt))]
 
 def get_dt_G2tmt(itime, G2tmt):
     return np.array([itime*2**b for b in range(len(G2tmt))])
-
+'''
 
 ###############################
 ##### GET g2mt from G2tmt #####
@@ -1538,10 +1448,21 @@ def get_g2mt(itime, G2tmt):
     dg2mt : numpy.ndarray
         Array of standard errors of the mean for each bin.
     """
+    
+    N_corr, N_ch = len(G2tmt), len(G2tmt[0])
 
-    t_g2mt = 2**np.arange(len(G2tmt))*itime
-    g2mt = np.array([np.mean(G2tmt[b]) for b in range(len(G2tmt))])
-    dg2mt = np.array([np.std(G2tmt[b])/np.sqrt(G2tmt[b].size) for b in range(len(G2tmt))])
+    t_g2mt, g2mt, dg2mt = [], [], []
+    for corr in range(N_corr):
+        for ch in range(N_ch):
+            if (ch==0) or ((corr>0) and (ch<N_ch//2)):
+                pass
+            else:
+                # Get the time delays for the current bin
+                t_g2mt.append(itime*2**corr*ch)
+                g2mt.append(np.mean(G2tmt[corr][ch]))
+
+                dg2mt.append(np.std(G2tmt[corr][ch]) / np.sqrt(G2tmt[corr][ch].size))
+
     return t_g2mt, g2mt, dg2mt
 
 

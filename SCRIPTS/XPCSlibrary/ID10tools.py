@@ -126,6 +126,8 @@ def load_scan(raw_folder, sample_name, Ndataset, Nscan):
     except: scan['ys']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['ys'][()]
     try:    scan['zs']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['zs'][:]
     except: scan['zs']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['zs'][()]
+    try:    scan['th']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['th'][:]
+    except: scan['th']      = h5file[f"{Nscan}.1"]['instrument']['positioners']['th'][()]
 
     # PID temperatures
     try:    scan['omega_sample'] = h5file[f"{Nscan}.2"]['measurement']['omega_sample'][:]
