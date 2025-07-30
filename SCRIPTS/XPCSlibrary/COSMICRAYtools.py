@@ -7,6 +7,9 @@ This module contains functions for filtering cosmic rays and gamma rays from E4M
 Author: Fabio Brugnara
 """
 
+import os
+os.environ["MKL_INTERFACE_LAYER"] = "ILP64"
+
 
 ### IMPORT SCIENTIFIC LIBRARIES ###
 import numpy as np
@@ -110,7 +113,7 @@ def fast_gamma_filter(e4m_data, Imaxth_high, mask=None, info=False, itime=None):
 ##### COSMIC RAY FILTER #########
 #################################
 
-def cosmic_filter(e4m_data, Dpx, counts_th,  mask=None, itime=None, Nfi=None, Nff=None, Lbin=None, mask_plot=False, hist_plot=False, Nsigma=10, MKL_library=True):
+def cosmic_filter(e4m_data, Dpx, counts_th,  mask=None, itime=None, Nfi=None, Nff=None):
     '''
     Cosmic ray filter for E4M data.
     
@@ -130,8 +133,6 @@ def cosmic_filter(e4m_data, Dpx, counts_th,  mask=None, itime=None, Nfi=None, Nf
         First frame to be loaded. Default is None.
     Nff: int, optional
         Last frame to be loaded. Default is None.
-    Lbin: int, optional
-        Binning factor. Default is None.
     mask_plot: bool, optional
         If True, plot the mask. Default is False.
     hist_plot: bool, optional
@@ -140,7 +141,6 @@ def cosmic_filter(e4m_data, Dpx, counts_th,  mask=None, itime=None, Nfi=None, Nf
         Number of standard deviations for the histogram. Default is 10.
     MKL_library: bool, optional
         If True, use MKL library for matrix multiplication. Default is True.
-    
     Returns
     -------
     CR: sparse.sparray
@@ -151,38 +151,16 @@ def cosmic_filter(e4m_data, Dpx, counts_th,  mask=None, itime=None, Nfi=None, Nf
 
     if Nfi == None: Nfi = 0
     if Nff == None: Nff = e4m_data.shape[0]
-    if Lbin == None: Lbin = 1
 
     #  LOAD DATA
     t0 = time.time()
     print('Loading frames ...')
     if (Nfi!=0) or (Nff!=e4m_data.shape[0]): Itp = e4m_data[Nfi:Nff]
     else : Itp = e4m_data
+    # convert to float32
+    if Itp.dtype != np.float32:
+        Itp = Itp.astype(np.float32)
     print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    # BIN DATA
-    if Lbin != 1:
-        t0 = time.time()
-        if MKL_library:
-            print('Binning frames (Lbin = '+str(Lbin)+', using MKL library) ...')
-            Itp = (Itp[:Itp.shape[0]//Lbin*Lbin])
-            BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//Lbin, np.arange(Itp.shape[0]))))
-            Itp = dot_product_mkl(BIN_matrix, Itp, dense=False, cast=True)
-            print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-    
-        else:
-            print('Binning frames (Lbin = '+str(Lbin)+') ...')
-            Itp = Itp[:Itp.shape[0]//Lbin*Lbin]
-            BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//Lbin, np.arange(Itp.shape[0]))))
-            Itp = BIN_matrix@Itp
-            print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    print('\t | '+str(Itp.shape[0])+' frames X '+str(Itp.shape[1])+' pixels')
-    if isinstance(Itp, sparse.sparray):
-        print('\t | sparsity = {:.2e}'.format(Itp.data.size/(Itp.shape[0]*Itp.shape[1])))
-        print('\t | memory usage (sparse.csr_array @ '+str(Itp.dtype)+') =', round((Itp.data.nbytes+Itp.indices.nbytes+Itp.indptr.nbytes)/1024**3,3), 'GB')
-    else:
-        print('\t | memory usage (np.array @ '+str(Itp.dtype)+') =', round(Itp.nbytes/1024**3,3), 'GB')
 
     #  MASK DATA
     t0 = time.time()
@@ -192,11 +170,11 @@ def cosmic_filter(e4m_data, Dpx, counts_th,  mask=None, itime=None, Nfi=None, Nf
         if isinstance(Itp, sparse.sparray): Itp.eliminate_zeros()
         print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
-
     # GENERATE KERNEL MATRIX (Npx X Npx)
     t0 = time.time()
     print('Generating kernel matrix ...')
     offsets = [i for i in range(-Dpx, Dpx+1) if i!=0]
+    #offsets = [i for i in range(-Dpx, Dpx+1)]
     IWY = sparse.diags_array([1]*len(offsets), offsets=offsets, shape=(Ny, Ny), format='csr')
 
     def Ns4KernelMatrix(N, Dpx, c):
@@ -212,19 +190,20 @@ def cosmic_filter(e4m_data, Dpx, counts_th,  mask=None, itime=None, Nfi=None, Nf
         a, b, c = Ns4KernelMatrix(Nx, Dpx, x)
         KM[x] = a*[None] + b*[IWY] + c*[None]
 
-    KM = sparse.block_array(KM, format='csr')
+    KM = sparse.block_array(KM, format='csr').astype(np.float32)
     print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
     # KERNEL MULTIPLICATION (COSMIC RAY RETRIEVAL)
     t0 = time.time()
-    if MKL_library:
-        print('Cosmic ray retrieval (using MKL library) ...')
-        CR = (dot_product_mkl(Itp.astype(bool), KM, cast=True) >= counts_th)*Itp.astype(bool)
-        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-    else:
-        print('Cosmic ray retrieval ...')
-        CR = ((Itp.astype(bool)@KM) >= counts_th)*Itp.astype(bool)
-        print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+    print('Cosmic ray retrieval (using MKL library) ...')
+    print('\t -> Kernel matrix multiplication ...')
+    CR = dot_product_mkl(Itp.astype(bool).astype(np.float32), KM)
+    print('\t -> Removing cosmic rays borders ...')
+    CR = CR*Itp.astype(bool)
+    print('\t -> Thresholding ...')
+    CR = (CR >= counts_th)
+
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
 
     I_cosmic = (Itp*CR).sum()
     N_cosmic = CR.sum(axis=1).flatten().astype(bool).sum()
@@ -236,39 +215,11 @@ def cosmic_filter(e4m_data, Dpx, counts_th,  mask=None, itime=None, Nfi=None, Nf
         print('\t | Cosmic ray signal intensity =', I_cosmic/Itp.sum()*100, '%')
         print('\t | # of cosmic rays (assumption of max 1 event per frame) =', N_cosmic/Itp.shape[0]*100, '% of frames')
 
-    # FIRST HIST PLOT
-    if hist_plot:
-        plt.figure(figsize=(10,5))
-        It = Itp.sum(axis=1)
-        It_mean = It.mean()
-        It_std = np.sqrt((It**2).mean()-It_mean**2)
-        plt.hist(It, alpha=1, range=(It_mean-Nsigma*It_std, It_mean+Nsigma*It_std), label='raw_data', bins=200)
-        plt.yscale('log')
-        plt.xlabel('Integrated intensity [counts/frame]')
-
     # REMOVE COSMIC RAYS
     t0 = time.time()
     print('Removing cosmic rays ...')
     Itp = Itp - (Itp*CR)
     if isinstance(Itp, sparse.sparray): Itp.eliminate_zeros()
     print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
-
-    # SECOND HIST PLOT
-    if hist_plot:
-        plt.hist(Itp.sum(axis=1), alpha=.5,  range=(It_mean-Nsigma*It_std, It_mean+Nsigma*It_std), label='cosmic ray removed', bins=200)
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
-
-    # MASK PLOT
-    if mask_plot:
-        plt.figure(figsize=(10,10))
-        CR_mask = CR.sum(axis=0).astype(bool)
-        plt.imshow(CR_mask.reshape(Nx, Ny), cmap='viridis', origin='lower')
-        plt.xlabel('Y')
-        plt.ylabel('X')
-        plt.title('Cosmic Ray Mask')
-        plt.tight_layout()
-        plt.show()
 
     return CR, Itp

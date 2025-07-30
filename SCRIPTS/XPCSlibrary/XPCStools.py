@@ -563,6 +563,63 @@ def get_It(e4m_data, itime, mask=None, Nfi=None, Nff=None, Lbin=None, Nstep=None
 
     return t_It, It
 
+#################################
+######### COMUPTE G2t ###########
+#################################
+
+def bin_Itp(e4m_data, Lbin, Nfi=None, Nff=None, bin2dense=False):
+    '''
+    Compute the G2t matrix from the e4m, properly masked with the matrix mask.
+
+    Parameters
+    ----------
+    e4m_data: sparse.csr_matrix
+        Sparse matrix of the e4m detector data
+    Nfi: int
+        First frame to consider
+    Nff: int
+        Last frame to consider
+    Lbin: int
+        Binning factor for the frames
+    MKL_library: boolean
+        If True, use the MKL library for the matrix multiplication
+    
+    Returns
+    -------
+    G2t: np.array
+        G2t matrix
+        
+    '''
+
+    if Nfi == None: Nfi = 0
+    if Nff == None: Nff = e4m_data.shape[0]
+
+    #  LOAD DATA
+    t0 = time.time()
+    print('Loading frames ...')
+    if (Nfi!=0) or (Nff!=e4m_data.shape[0]): Itp = e4m_data[Nfi:Nff]
+    else : Itp = e4m_data
+    # convert to float32
+    if Itp.dtype != np.float32:
+        Itp = Itp.astype(np.float32)
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+
+    # BIN DATA
+    t0 = time.time()
+    print('Binning frames (Lbin = '+str(Lbin)+', using MKL library) ...')
+    Itp = (Itp[:Itp.shape[0]//Lbin*Lbin]) # throw the last frames 
+    BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//Lbin, np.arange(Itp.shape[0]))), dtype=np.float32)
+    Itp = dot_product_mkl(BIN_matrix, Itp, dense=bin2dense)
+    print('Done! (elapsed time =', round(time.time()-t0, 2), 's)')
+    print('\t | '+str(Itp.shape[0])+' frames X '+str(Itp.shape[1])+' pixels')
+    if isinstance(Itp, sparse.sparray):
+        print('\t | sparsity = {:.2e}'.format(Itp.data.size/(Itp.shape[0]*Itp.shape[1])))
+        print('\t | memory usage (sparse.csr_array @ '+str(Itp.dtype)+') =', round((Itp.data.nbytes+Itp.indices.nbytes+Itp.indptr.nbytes)/1024**3,3), 'GB')
+    else:
+        print('\t | memory usage (np.array @ '+str(Itp.dtype)+') =', round(Itp.nbytes/1024**3,3), 'GB')
+
+    return Itp
+
 
 ############################
 ######## COMPUTE SQ ########
