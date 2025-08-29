@@ -760,7 +760,7 @@ def get_G2t(e4m_data, mask=None, Nfi=None, Nff=None, Lbin=None, bin2dense=False)
 
     # BIN DATA
     if Lbin != 1:
-        t0 = time.time()
+        
         print('Binning frames (Lbin = '+str(Lbin)+', using MKL library) ...')
         Itp = (Itp[:Itp.shape[0]//Lbin*Lbin]) # throw the last frames 
         BIN_matrix = sparse.csr_array((np.ones(Itp.shape[0]), (np.arange(Itp.shape[0])//Lbin, np.arange(Itp.shape[0]))), dtype=np.float32)
@@ -1521,6 +1521,33 @@ def get_g2mt(itime, G2tmt):
                 dg2mt.append(np.std(G2tmt[corr][ch]) / np.sqrt(G2tmt[corr][ch].size))
 
     return t_g2mt, g2mt, dg2mt
+
+
+###############################
+##### GET g2mt from G2tmt #####
+###############################
+
+def get_g2mt_cut(itime, G2tmt, t1, t2):
+    
+    N_corr, N_ch = len(G2tmt), len(G2tmt[0])
+
+    t_g2mt, g2mt_cut, dg2mt_cut = [], [], []
+    for corr in range(N_corr):
+        itime_corr = itime * 2**corr
+        for ch in range(N_ch):
+            if (ch==0) or ((corr>0) and (ch<N_ch//2)):
+                pass
+            else:
+                x = np.arange(G2tmt[corr][ch].size)*itime_corr + (1+ch)*itime_corr/2
+                dx = itime_corr
+                mask = ((x-dx/2)>=t1) & ((x+dx/2)<=t2)
+
+                if mask.sum() != 0:
+                    t_g2mt.append(itime*2**corr*ch)
+                    g2mt_cut.append(np.mean(G2tmt[corr][ch][mask]))
+                    dg2mt_cut.append(np.std(G2tmt[corr][ch][mask]) / np.sqrt(G2tmt[corr][ch][mask].size))
+
+    return np.array(t_g2mt), np.array(g2mt_cut), np.array(dg2mt_cut)
 
 
 ###################################
