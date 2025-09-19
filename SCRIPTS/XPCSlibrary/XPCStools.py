@@ -553,6 +553,10 @@ def get_It(e4m_data, itime, mask=None, Nfi=None, Nff=None, Lbin=None, Nstep=None
     if Lbin is None: Lbin = 1
     if Nstep is None: Nstep = 1
     if mask is None: mask = np.ones(e4m_data.shape[1], dtype=bool) 
+
+    if Lbin>Nstep:
+        raise ValueError("Lbin cannot be greater than Nstep")
+
     
     # COMPUTE It (masked)
     idx = Nfi + np.array([i for i in range(Nff-Nfi) if i % Nstep < Lbin][:((Nff-Nfi)//Nstep-1)*Nstep]) # GET THE CORRECT INDEXES FROM Nfi, Nff, Lbin and Nstep
